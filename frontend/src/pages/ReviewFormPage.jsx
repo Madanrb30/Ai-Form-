@@ -10,16 +10,18 @@ import {
 import { api } from "../services/api";
 import { storageService } from "../services/storageService";
 import { useToast } from "../context/ToastContext";
+import { useAuth } from "../context/AuthContext";
 import Modal from "../components/common/Modal";
 
-export default function ReviewFormPage({ formId, values = {}, setView }) {
+export default function ReviewFormPage({ formId, values = {}, setView, initialSubmissionSuccess = null }) {
+  const { user } = useAuth();
   const { toast } = useToast();
 
   const [form, setForm] = useState(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [validationErrors, setValidationErrors] = useState([]);
-  const [submissionSuccess, setSubmissionSuccess] = useState(null);
+  const [submissionSuccess, setSubmissionSuccess] = useState(initialSubmissionSuccess || null);
   const [submitModalOpen, setSubmitModalOpen] = useState(false);
 
   useEffect(() => {
@@ -98,7 +100,7 @@ export default function ReviewFormPage({ formId, values = {}, setView }) {
       const response = await api.createSubmission(formId, values);
       setSubmissionSuccess(response);
       // Clean up local draft since form has been officially submitted
-      storageService.deleteDraft(formId);
+      storageService.deleteDraft(formId, user?.id);
       toast("Form response submitted and saved successfully!", "success");
     } catch (err) {
       if (err.details && Array.isArray(err.details)) {

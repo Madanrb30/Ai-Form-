@@ -73,6 +73,19 @@ def test_conversational_turn_correction_and_completion(client, sample_form):
     # email is preserved
     assert data2["updated_values"].get("email") == "bob@example.com"
 
+    # Step 3: User confirms submission ("Yes, submit the form")
+    res3 = client.post(f"/api/forms/{sample_form.id}/conversation", json={
+        "session_id": session_id,
+        "transcript": "Yes, submit the form",
+        "current_values": data2["updated_values"]
+    })
+    assert res3.status_code == 200
+    data3 = res3.json()
+    assert data3["is_submitted"] is True
+    assert data3["submission_id"] is not None
+    assert "successfully submitted" in data3["assistant_response"].lower()
+    assert data3["stage"] == "submitted"
+
 
 def test_form_draft_lifecycle(client, sample_form):
     # 1. Draft should initially not exist (200 with null body)

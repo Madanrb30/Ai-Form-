@@ -66,6 +66,7 @@ function MainApp() {
           formId={currentView.formId}
           formTitle={currentView.formTitle}
           values={currentView.values}
+          initialSubmissionSuccess={currentView.initialSubmissionSuccess}
           setView={setView}
         />
       )}

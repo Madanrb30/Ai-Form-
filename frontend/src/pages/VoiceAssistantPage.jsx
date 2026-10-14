@@ -3,6 +3,7 @@ import {
   ArrowRight,
   ArrowLeft,
   Save,
+  Send,
   Volume2,
   VolumeX,
   Edit3,
@@ -14,6 +15,7 @@ import { api } from "../services/api";
 import { storageService } from "../services/storageService";
 import { ttsService } from "../services/ttsService";
 import { useVoiceRecognition } from "../hooks/useVoiceRecognition";
+import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ToastContext";
 import MicrophoneButton from "../components/voice/MicrophoneButton";
 import AudioWaveform from "../components/voice/AudioWaveform";
@@ -21,6 +23,7 @@ import VoiceTranscriptPanel from "../components/voice/VoiceTranscriptPanel";
 import FormRenderer from "../components/forms/FormRenderer";
 
 export default function VoiceAssistantPage({ formId, setView }) {
+  const { user } = useAuth();
   const { toast } = useToast();
 
   const [form, setForm] = useState(null);
@@ -84,7 +87,7 @@ export default function VoiceAssistantPage({ formId, setView }) {
         setForm(formData);
 
         // Check for saved draft (server or local storage)
-        const localDraft = storageService.getDraft(formId);
+        const localDraft = storageService.getDraft(formId, user?.id);
         const draftValues = serverDraft?.values_json || localDraft?.values || {};
         const initial = {};
 
@@ -208,7 +211,45 @@ export default function VoiceAssistantPage({ formId, setView }) {
         // Autosave draft server-side and locally
         const activeSessionId = turnRes.session_id || sessionId;
         api.saveDraft(formId, updated, activeSessionId).catch(() => {});
-        storageService.saveDraft(formId, updated, form?.title || "Form Draft");
+        storageService.saveDraft(formId, updated, form?.title || "Form Draft", user?.id);
+
+        if (turnRes.is_submitted || turnRes.submission_id) {
+          // Form successfully submitted by the conversational agent!
+          storageService.deleteDraft(formId, user?.id);
+          setVoiceState("completed");
+          setStatusMessage("Form submitted successfully!");
+          toast("Form response submitted successfully!", "success");
+
+          const submissionReply = turnRes.assistant_response || "Your form has been successfully submitted!";
+
+          setConversation((prev) => [
+            ...prev,
+            {
+              role: "assistant",
+              text: submissionReply,
+              meta: `Submitted #${turnRes.submission_id}`,
+            },
+          ]);
+
+          if (ttsEnabled) {
+            ttsService.speak(submissionReply);
+          }
+
+          setTimeout(() => {
+            setView({
+              name: "review",
+              formId,
+              formTitle: form?.title,
+              values: turnRes.updated_values || updated,
+              initialSubmissionSuccess: {
+                id: turnRes.submission_id,
+                form_id: formId,
+                created_at: new Date().toISOString(),
+              },
+            });
+          }, 1800);
+          return;
+        }
 
         const assistantReply = turnRes.assistant_response || "Information updated.";
 
@@ -223,8 +264,8 @@ export default function VoiceAssistantPage({ formId, setView }) {
 
         if (turnRes.is_completed) {
           setVoiceState("completed");
-          setStatusMessage("All required fields are completed! Ready for review.");
-          toast("All required fields are completed! You can review and submit.", "success");
+          setStatusMessage("All required fields are completed! Ready for submission.");
+          toast("All required fields are completed! Speak 'submit' or click to submit.", "success");
         } else {
           setVoiceState("waiting");
           setStatusMessage(
@@ -274,12 +315,34 @@ export default function VoiceAssistantPage({ formId, setView }) {
 
   // Draft Save Handler
   const handleSaveDraft = async () => {
-    storageService.saveDraft(formId, values, form?.title || "Form Draft");
+    storageService.saveDraft(formId, values, form?.title || "Form Draft", user?.id);
     try {
       await api.saveDraft(formId, values, sessionId);
       toast("Draft progress saved to cloud database and local storage.", "success");
     } catch {
       toast("Draft progress saved to local storage.", "info");
+    }
+  };
+
+  // Direct Submission Handler
+  const [submitting, setSubmitting] = useState(false);
+  const handleDirectSubmit = async () => {
+    setSubmitting(true);
+    try {
+      const response = await api.createSubmission(formId, values);
+      storageService.deleteDraft(formId, user?.id);
+      toast("Form response submitted successfully!", "success");
+      setView({
+        name: "review",
+        formId,
+        formTitle: form?.title,
+        values,
+        initialSubmissionSuccess: response,
+      });
+    } catch (err) {
+      toast(`Submission failed: ${err.message}`, "error");
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -393,20 +456,40 @@ export default function VoiceAssistantPage({ formId, setView }) {
             <span>Save Draft</span>
           </button>
 
-          <button
-            onClick={() =>
-              setView({
-                name: "review",
-                formId,
-                formTitle: form?.title,
-                values,
-              })
-            }
-            className="px-4 py-1.5 bg-[#111111] hover:bg-neutral-800 text-white rounded-lg text-xs font-semibold transition-colors flex items-center space-x-1.5 cursor-pointer shadow-xs"
-          >
-            <span>Review & Submit</span>
-            <ArrowRight className="w-3.5 h-3.5" />
-          </button>
+          {progressPercent === 100 ? (
+            <button
+              onClick={handleDirectSubmit}
+              disabled={submitting}
+              className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold transition-colors flex items-center space-x-1.5 cursor-pointer shadow-xs disabled:opacity-50"
+            >
+              {submitting ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Submitting...</span>
+                </>
+              ) : (
+                <>
+                  <span>Submit Form Now</span>
+                  <Send className="w-3.5 h-3.5" />
+                </>
+              )}
+            </button>
+          ) : (
+            <button
+              onClick={() =>
+                setView({
+                  name: "review",
+                  formId,
+                  formTitle: form?.title,
+                  values,
+                })
+              }
+              className="px-4 py-1.5 bg-[#111111] hover:bg-neutral-800 text-white rounded-lg text-xs font-semibold transition-colors flex items-center space-x-1.5 cursor-pointer shadow-xs"
+            >
+              <span>Review & Submit</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </div>
 

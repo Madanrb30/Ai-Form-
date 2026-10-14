@@ -12,9 +12,11 @@ import {
 import { api } from "../services/api";
 import { storageService } from "../services/storageService";
 import { useToast } from "../context/ToastContext";
+import { useAuth } from "../context/AuthContext";
 import FormRenderer from "../components/forms/FormRenderer";
 
 export default function FormEditorPage({ formId, formTitle, setView }) {
+  const { user } = useAuth();
   const { toast } = useToast();
 
   const [form, setForm] = useState(null);
@@ -37,7 +39,7 @@ export default function FormEditorPage({ formId, formTitle, setView }) {
         setForm(data);
 
         // Check for draft
-        const draft = storageService.getDraft(formId);
+        const draft = storageService.getDraft(formId, user?.id);
         const initial = {};
 
         data.schema_json?.fields?.forEach((f) => {
@@ -64,12 +66,12 @@ export default function FormEditorPage({ formId, formTitle, setView }) {
     return () => {
       isMounted = false;
     };
-  }, [formId]);
+  }, [formId, user?.id]);
 
   const handleSaveDraft = async () => {
     setSaving(true);
     try {
-      storageService.saveDraft(formId, values, form?.title || "Form Draft");
+      storageService.saveDraft(formId, values, form?.title || "Form Draft", user?.id);
       toast("Form draft successfully saved.", "success");
     } catch (err) {
       toast(`Failed to save draft: ${err.message}`, "error");

@@ -243,6 +243,7 @@ def list_forms(
     """
     Retrieve saved forms. Authenticated users see their own forms plus all public forms;
     unauthenticated visitors see only explicitly public forms.
+    Administrators (ADMIN / SUPER_ADMIN) have access to manage all forms.
     """
     if current_user:
         forms = (
@@ -261,6 +262,48 @@ def list_forms(
     return forms
 
 
+@router.get("/user/stats")
+def get_user_dashboard_stats(
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional)
+):
+    """
+    Returns user-isolated statistics for dashboard cards:
+    - total_accessible_forms: forms accessible to user (public + owned)
+    - my_forms_count: personal forms created by this user
+    - shared_templates_count: public template forms
+    - my_submissions_count: completed submissions authored by this user
+    - my_drafts_count: in-progress drafts authored by this user
+    """
+    shared_count = db.query(Form).filter(Form.is_public == True).count()
+    if not current_user:
+        return {
+            "total_accessible_forms": shared_count,
+            "my_forms_count": 0,
+            "shared_templates_count": shared_count,
+            "my_submissions_count": 0,
+            "my_drafts_count": 0,
+        }
+
+    my_forms = db.query(Form).filter(Form.user_id == current_user.id).count()
+    total_forms = (
+        db.query(Form)
+        .filter((Form.user_id == current_user.id) | (Form.is_public == True))
+        .count()
+    )
+
+    my_subs = db.query(Submission).filter(Submission.user_id == current_user.id).count()
+    my_drafts = db.query(Draft).filter(Draft.user_id == current_user.id).count()
+
+    return {
+        "total_accessible_forms": total_forms,
+        "my_forms_count": my_forms,
+        "shared_templates_count": shared_count,
+        "my_submissions_count": my_subs,
+        "my_drafts_count": my_drafts,
+    }
+
+
 @router.get("/{form_id}", response_model=FormResponse)
 def get_form(
     form_id: int,
@@ -270,7 +313,7 @@ def get_form(
     """
     Retrieve a specific form by its ID.
     Enforces privacy: if a form is private (is_public=False), only the owner can view it.
-    Unauthenticated users receive 401; unauthorized users receive 404 to avoid leaking existence.
+    Unauthenticated users receive 401; unauthorized users receive 403 to enforce strict ownership.
     """
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
@@ -502,8 +545,9 @@ def get_form_draft(
     if current_user:
         draft = query.filter(Draft.user_id == current_user.id).first()
     else:
-        if session_id:
-            draft = query.filter(Draft.user_id.is_(None), Draft.session_id == session_id).first()
+        clean_session = (session_id or "").strip()
+        if clean_session:
+            draft = query.filter(Draft.user_id.is_(None), Draft.session_id == clean_session).first()
         else:
             draft = query.filter(Draft.user_id.is_(None), Draft.session_id.is_(None)).first()
 
@@ -544,8 +588,9 @@ def save_form_draft(
     if current_user:
         draft = query.filter(Draft.user_id == current_user.id).first()
     else:
-        if req.session_id:
-            draft = query.filter(Draft.user_id.is_(None), Draft.session_id == req.session_id).first()
+        clean_session = (req.session_id or "").strip()
+        if clean_session:
+            draft = query.filter(Draft.user_id.is_(None), Draft.session_id == clean_session).first()
         else:
             draft = query.filter(Draft.user_id.is_(None), Draft.session_id.is_(None)).first()
 
@@ -587,8 +632,9 @@ def delete_form_draft(
     if current_user:
         drafts = query.filter(Draft.user_id == current_user.id).all()
     else:
-        if session_id:
-            drafts = query.filter(Draft.user_id.is_(None), Draft.session_id == session_id).all()
+        clean_session = (session_id or "").strip()
+        if clean_session:
+            drafts = query.filter(Draft.user_id.is_(None), Draft.session_id == clean_session).all()
         else:
             drafts = query.filter(Draft.user_id.is_(None), Draft.session_id.is_(None)).all()
 
@@ -735,13 +781,16 @@ def get_form_submissions(
 
     # Privacy check
     if not form.is_public and form.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Form with ID {form_id} was not found"
-        )
+        is_admin = current_user.role in ["ADMIN", "SUPER_ADMIN"]
+        if not is_admin:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Form with ID {form_id} was not found"
+            )
 
-    # If the current user is the owner of the form, return all submissions
-    if form.user_id is not None and current_user.id == form.user_id:
+    is_admin = current_user.role in ["ADMIN", "SUPER_ADMIN"]
+    # If the current user is the owner of the form or an admin, return all submissions
+    if (form.user_id is not None and current_user.id == form.user_id) or is_admin:
         submissions = (
             db.query(Submission)
             .filter(Submission.form_id == form_id)
@@ -769,7 +818,7 @@ def download_submission_pdf(
 ):
     """
     Download publication-ready completed PDF for this submission.
-    Requires authentication. Access is permitted only to the submission author or form owner.
+    Requires authentication. Access is permitted only to the submission author, form owner, or admin.
     """
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
@@ -793,7 +842,8 @@ def download_submission_pdf(
 
     is_owner = (form.user_id is not None) and (current_user.id == form.user_id)
     is_author = (submission.user_id is not None) and (current_user.id == submission.user_id)
-    if not is_owner and not is_author:
+    is_admin = current_user.role in ["ADMIN", "SUPER_ADMIN"]
+    if not is_owner and not is_author and not is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have permission to download this submission PDF."

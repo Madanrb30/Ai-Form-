@@ -192,6 +192,8 @@ class ConversationTurnResponse(BaseModel):
     needs_review: Dict[str, str]
     stage: str
     is_completed: bool
+    is_submitted: bool = False
+    submission_id: Optional[int] = None
 
 
 class DraftSaveRequest(BaseModel):

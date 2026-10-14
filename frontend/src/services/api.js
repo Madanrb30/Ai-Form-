@@ -14,7 +14,9 @@ function getStoredToken() {
     const raw = localStorage.getItem("voxform_user_session") || sessionStorage.getItem("voxform_user_session");
     if (raw) {
       const parsed = JSON.parse(raw);
-      return parsed.token || null;
+      if (parsed && typeof parsed.token === "string" && parsed.token.trim() && !parsed.token.startsWith("sess_")) {
+        return parsed.token.trim();
+      }
     }
   } catch {
     // Ignore parse error
@@ -68,6 +70,16 @@ async function request(endpoint, options = {}) {
     }
 
     if (!res.ok) {
+      // Purge invalid or expired session on 401 (except on login attempts)
+      if (res.status === 401 && endpoint !== "/auth/login") {
+        try {
+          localStorage.removeItem("voxform_user_session");
+          sessionStorage.removeItem("voxform_user_session");
+        } catch {
+          // ignore storage error
+        }
+      }
+
       const errMsg =
         (typeof data === "object" && (data?.detail?.message || data?.detail || data?.message)) ||
         `HTTP Error ${res.status}: ${res.statusText}`;
@@ -124,6 +136,7 @@ export const api = {
     });
   },
   getForms: () => request("/forms"),
+  getUserStats: () => request("/forms/user/stats"),
   getForm: (id) => request(`/forms/${id}`),
   createForm: (formData) =>
     request("/forms", {

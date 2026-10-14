@@ -24,6 +24,7 @@ const sessionStorageMock = createStorageMock();
 globalThis.localStorage = localStorageMock;
 globalThis.sessionStorage = sessionStorageMock;
 
+import { api } from "../services/api";
 import { authService } from "../services/authService";
 import { storageService } from "../services/storageService";
 
@@ -31,16 +32,29 @@ describe("Frontend Services Unit Tests", () => {
   beforeEach(() => {
     localStorageMock.clear();
     sessionStorageMock.clear();
+    vi.restoreAllMocks();
   });
 
-  it("handles user authentication and session persistence", () => {
-    const user = authService.login("testuser@example.com", "password123", true);
+  it("handles user authentication and session persistence", async () => {
+    vi.spyOn(api, "login").mockResolvedValue({
+      token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test.jwt",
+      user: {
+        id: 101,
+        email: "testuser@example.com",
+        full_name: "Test User",
+        role: "USER",
+        avatar: "TU",
+      },
+    });
+
+    const user = await authService.login("testuser@example.com", "password123", true);
     expect(user.email).toBe("testuser@example.com");
-    expect(user.avatar).toBe("TE");
+    expect(user.token).toBe("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test.jwt");
 
     const current = authService.getCurrentUser();
     expect(current).not.toBeNull();
     expect(current.email).toBe("testuser@example.com");
+    expect(current.token).toBe("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test.jwt");
 
     authService.logout();
     expect(localStorageMock.removeItem).toHaveBeenCalledWith("voxform_user_session");

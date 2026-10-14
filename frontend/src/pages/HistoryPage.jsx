@@ -15,10 +15,12 @@ import {
 } from "lucide-react";
 import { api } from "../services/api";
 import { storageService } from "../services/storageService";
+import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ToastContext";
 import Modal from "../components/common/Modal";
 
 export default function HistoryPage({ setView }) {
+  const { user } = useAuth();
   const { toast } = useToast();
 
   const [forms, setForms] = useState([]);
@@ -43,7 +45,7 @@ export default function HistoryPage({ setView }) {
       const formsList = await api.getForms();
       setForms(formsList);
 
-      const localDrafts = storageService.getDrafts();
+      const localDrafts = storageService.getDrafts(user?.id);
       setDraftsMap(localDrafts);
 
       // Fetch submissions for all forms
@@ -66,14 +68,14 @@ export default function HistoryPage({ setView }) {
 
   useEffect(() => {
     loadHistory();
-  }, []);
+  }, [user?.id]);
 
   const confirmDeleteForm = async () => {
     if (!deleteFormTarget) return;
     setDeleting(true);
     try {
       await api.deleteForm(deleteFormTarget.id);
-      storageService.deleteDraft(deleteFormTarget.id);
+      storageService.deleteDraft(deleteFormTarget.id, user?.id);
       setForms((prev) => prev.filter((f) => f.id !== deleteFormTarget.id));
       toast(`Form "${deleteFormTarget.title}" deleted.`, "info");
       setDeleteFormTarget(null);

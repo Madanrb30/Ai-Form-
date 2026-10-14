@@ -31,28 +31,30 @@ export default function DashboardPage({ setView, searchQuery = "", setSearchQuer
   const [deleteModalForm, setDeleteModalForm] = useState(null);
   const [deleting, setDeleting] = useState(false);
 
+  const [stats, setStats] = useState(null);
+
   const loadDashboardData = async () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await api.getForms();
-      setForms(data);
+      const [formsData, userStats] = await Promise.all([
+        api.getForms(),
+        api.getUserStats().catch(() => null),
+      ]);
+      setForms(formsData);
 
-      // Count drafts from local storage
-      const drafts = storageService.getDrafts();
-      setDraftsCount(Object.keys(drafts).length);
+      // User-isolated drafts count (server stats with client storage fallback)
+      const localDrafts = storageService.getDrafts(user?.id);
+      const localDraftCount = Object.keys(localDrafts).length;
+      const effectiveDrafts = userStats?.my_drafts_count !== undefined && userStats.my_drafts_count > 0
+        ? userStats.my_drafts_count
+        : localDraftCount;
+      setDraftsCount(effectiveDrafts);
 
-      // Count submissions across forms
-      let totalSubs = 0;
-      for (const f of data.slice(0, 10)) {
-        try {
-          const subs = await api.getSubmissions(f.id);
-          totalSubs += subs.length;
-        } catch {
-          // ignore individual submission count failure
-        }
-      }
-      setSubmissionsCount(totalSubs);
+      // User-isolated completed submissions count
+      const effectiveSubs = userStats?.my_submissions_count ?? 0;
+      setSubmissionsCount(effectiveSubs);
+      setStats(userStats);
     } catch (err) {
       setError(err.message || "Failed to load dashboard forms.");
     } finally {
@@ -62,14 +64,14 @@ export default function DashboardPage({ setView, searchQuery = "", setSearchQuer
 
   useEffect(() => {
     loadDashboardData();
-  }, []);
+  }, [user?.id]);
 
   const confirmDelete = async () => {
     if (!deleteModalForm) return;
     setDeleting(true);
     try {
       await api.deleteForm(deleteModalForm.id);
-      storageService.deleteDraft(deleteModalForm.id);
+      storageService.deleteDraft(deleteModalForm.id, user?.id);
       setForms((prev) => prev.filter((f) => f.id !== deleteModalForm.id));
       toast(`Form "${deleteModalForm.title}" deleted successfully.`, "info");
       setDeleteModalForm(null);
@@ -89,6 +91,9 @@ export default function DashboardPage({ setView, searchQuery = "", setSearchQuer
       f.description?.toLowerCase().includes(q)
     );
   });
+
+  const myFormsCount = stats?.my_forms_count ?? forms.filter((f) => f.user_id && f.user_id === Number(user?.id)).length;
+  const sharedFormsCount = stats?.shared_templates_count ?? forms.filter((f) => f.is_public).length;
 
   return (
     <div className="max-w-6xl mx-auto px-4 sm:px-8 py-8 text-left">
@@ -124,7 +129,7 @@ export default function DashboardPage({ setView, searchQuery = "", setSearchQuer
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-8">
         <div className="bg-white border border-[#E5E5E5] rounded-xl p-5 hover:border-neutral-300 transition-all shadow-xs">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-[#737373]">Total Forms</span>
+            <span className="text-xs font-medium text-[#737373]">Available Forms</span>
             <div className="w-8 h-8 rounded-lg bg-[#F7F7F7] border border-[#E5E5E5] flex items-center justify-center">
               <FileText className="w-4 h-4 text-neutral-800" />
             </div>
@@ -133,13 +138,15 @@ export default function DashboardPage({ setView, searchQuery = "", setSearchQuer
             <span className="text-2xl font-bold tracking-tight text-neutral-900 font-mono">
               {loading ? "—" : forms.length}
             </span>
-            <span className="text-[11px] text-[#737373]">in SQLite Database</span>
+            <span className="text-[11px] text-[#737373]">
+              {myFormsCount} personal · {sharedFormsCount} shared templates
+            </span>
           </div>
         </div>
 
         <div className="bg-white border border-[#E5E5E5] rounded-xl p-5 hover:border-neutral-300 transition-all shadow-xs">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-[#737373]">Completed Forms</span>
+            <span className="text-xs font-medium text-[#737373]">My Submissions</span>
             <div className="w-8 h-8 rounded-lg bg-[#F7F7F7] border border-[#E5E5E5] flex items-center justify-center">
               <CheckCircle2 className="w-4 h-4 text-emerald-600" />
             </div>
@@ -148,13 +155,13 @@ export default function DashboardPage({ setView, searchQuery = "", setSearchQuer
             <span className="text-2xl font-bold tracking-tight text-neutral-900 font-mono">
               {loading ? "—" : submissionsCount}
             </span>
-            <span className="text-[11px] text-emerald-700 font-medium">Submissions recorded</span>
+            <span className="text-[11px] text-emerald-700 font-medium">Recorded for your account</span>
           </div>
         </div>
 
         <div className="bg-white border border-[#E5E5E5] rounded-xl p-5 hover:border-neutral-300 transition-all shadow-xs">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-[#737373]">Draft Forms</span>
+            <span className="text-xs font-medium text-[#737373]">My Drafts</span>
             <div className="w-8 h-8 rounded-lg bg-[#F7F7F7] border border-[#E5E5E5] flex items-center justify-center">
               <Clock className="w-4 h-4 text-neutral-500" />
             </div>
@@ -163,7 +170,7 @@ export default function DashboardPage({ setView, searchQuery = "", setSearchQuer
             <span className="text-2xl font-bold tracking-tight text-neutral-900 font-mono">
               {loading ? "—" : draftsCount}
             </span>
-            <span className="text-[11px] text-[#737373]">Saved in session</span>
+            <span className="text-[11px] text-[#737373]">In-progress responses</span>
           </div>
         </div>
       </div>
@@ -258,7 +265,7 @@ export default function DashboardPage({ setView, searchQuery = "", setSearchQuer
               month: "short",
               day: "numeric",
             });
-            const hasDraft = Boolean(storageService.getDraft(form.id));
+            const hasDraft = Boolean(storageService.getDraft(form.id, user?.id));
 
             return (
               <div

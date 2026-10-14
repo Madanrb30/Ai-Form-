@@ -3,29 +3,26 @@ import { api } from "./api";
 
 const STORAGE_KEY = "voxform_user_session";
 
-const DEFAULT_USER = {
-  id: "usr_101",
-  name: "Madan RB",
-  email: "madan@example.com",
-  role: "Product Lead",
-  avatar: "MR",
-  token: "sess_demo_token_8849",
-};
-
 export const authService = {
   getCurrentUser() {
     try {
       const stored = localStorage.getItem(STORAGE_KEY) || sessionStorage.getItem(STORAGE_KEY);
       if (stored) {
-        return JSON.parse(stored);
+        const parsed = JSON.parse(stored);
+        if (parsed && typeof parsed.token === "string" && parsed.token.trim() && !parsed.token.startsWith("sess_")) {
+          return parsed;
+        }
+        // Purge legacy/stale mock sessions
+        localStorage.removeItem(STORAGE_KEY);
+        sessionStorage.removeItem(STORAGE_KEY);
       }
     } catch {
       // Fallback
     }
-    return DEFAULT_USER;
+    return null;
   },
 
-  login(email, password, remember = true) {
+  async login(email, password, remember = true) {
     if (!email || !password) {
       throw new Error("Email and password are required.");
     }
@@ -33,49 +30,41 @@ export const authService = {
       throw new Error("Password must be at least 4 characters.");
     }
 
-    const name = email.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+    const cleanEmail = email.trim().toLowerCase();
+    const res = await api.login(cleanEmail, password);
+
+    if (!res || !res.token) {
+      throw new Error("Authentication failed: No access token received from server.");
+    }
+
+    const resUser = res.user || {};
+    const name = resUser.full_name || cleanEmail.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
     const words = (name || "User").trim().split(/\s+/);
-    const initials = words.length > 1
+    const initials = resUser.avatar || (words.length > 1
       ? (words[0][0] + words[1][0]).toUpperCase()
-      : (name || "US").slice(0, 2).toUpperCase();
+      : (name || "US").slice(0, 2).toUpperCase());
 
     const user = {
-      id: `usr_${Date.now()}`,
-      name: name || "Demo User",
-      email: email.trim().toLowerCase(),
-      role: "User",
-      avatar: initials || "DU",
-      token: `sess_${Math.random().toString(36).substring(2)}`,
+      id: String(resUser.id || ""),
+      name: name,
+      email: resUser.email || cleanEmail,
+      role: resUser.role || "USER",
+      avatar: initials,
+      token: res.token,
     };
 
     if (remember) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
+      sessionStorage.removeItem(STORAGE_KEY);
     } else {
       sessionStorage.setItem(STORAGE_KEY, JSON.stringify(user));
+      localStorage.removeItem(STORAGE_KEY);
     }
-
-    // Opportunistically authenticate with FastAPI backend if online
-    api.login(email.trim().toLowerCase(), password)
-      .then((res) => {
-        if (res && res.token && res.user) {
-          user.token = res.token;
-          user.id = String(res.user.id);
-          user.role = res.user.role || user.role;
-          if (remember) {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
-          } else {
-            sessionStorage.setItem(STORAGE_KEY, JSON.stringify(user));
-          }
-        }
-      })
-      .catch(() => {
-        // Silent fallback in background
-      });
 
     return user;
   },
 
-  register(name, email, password) {
+  async register(name, email, password) {
     if (!name || !name.trim()) {
       throw new Error("Name is required.");
     }
@@ -86,42 +75,43 @@ export const authService = {
       throw new Error("Password must be at least 6 characters.");
     }
 
-    const words = name.trim().split(/\s+/);
-    const initials = words.length > 1
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanName = name.trim();
+    const res = await api.register({ fullName: cleanName, email: cleanEmail, password });
+
+    if (!res || !res.token) {
+      throw new Error("Registration failed: No access token received from server.");
+    }
+
+    const resUser = res.user || {};
+    const words = cleanName.split(/\s+/);
+    const initials = resUser.avatar || (words.length > 1
       ? (words[0][0] + words[1][0]).toUpperCase()
-      : name.slice(0, 2).toUpperCase();
+      : cleanName.slice(0, 2).toUpperCase());
 
     const user = {
-      id: `usr_${Date.now()}`,
-      name: name.trim(),
-      email: email.trim().toLowerCase(),
-      role: "User",
-      avatar: initials || "U",
-      token: `sess_${Math.random().toString(36).substring(2)}`,
+      id: String(resUser.id || ""),
+      name: resUser.full_name || cleanName,
+      email: resUser.email || cleanEmail,
+      role: resUser.role || "USER",
+      avatar: initials,
+      token: res.token,
     };
 
     localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
-
-    api.register({ fullName: name.trim(), email: email.trim().toLowerCase(), password })
-      .then((res) => {
-        if (res && res.token && res.user) {
-          user.token = res.token;
-          user.id = String(res.user.id);
-          user.role = res.user.role || "USER";
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
-        }
-      })
-      .catch(() => {
-        // Silent fallback
-      });
-
+    sessionStorage.removeItem(STORAGE_KEY);
     return user;
   },
 
   updateProfile(updates) {
-    const current = this.getCurrentUser() || DEFAULT_USER;
+    const current = this.getCurrentUser();
+    if (!current) return null;
     const updated = { ...current, ...updates };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    if (localStorage.getItem(STORAGE_KEY)) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    } else {
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    }
     return updated;
   },
 

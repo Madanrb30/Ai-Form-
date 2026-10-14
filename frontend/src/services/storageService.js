@@ -1,5 +1,4 @@
 // Local storage management for Form Drafts and App Settings
-const DRAFTS_KEY = "voxform_form_drafts";
 const SETTINGS_KEY = "voxform_app_settings";
 
 const DEFAULT_SETTINGS = {
@@ -11,44 +10,67 @@ const DEFAULT_SETTINGS = {
   theme: "light",
 };
 
+function getCurrentUserId() {
+  try {
+    const raw = localStorage.getItem("voxform_user_session") || sessionStorage.getItem("voxform_user_session");
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.id) {
+        return String(parsed.id);
+      }
+    }
+  } catch {
+    // ignore parse error
+  }
+  return "guest";
+}
+
+function getDraftsKey(userId) {
+  const uid = userId !== undefined && userId !== null ? String(userId) : getCurrentUserId();
+  return `voxform_form_drafts_${uid}`;
+}
+
 export const storageService = {
-  // --- Form Drafts ---
-  getDrafts() {
+  // --- Form Drafts (strictly isolated per user ID) ---
+  getDrafts(userId) {
     try {
-      const data = localStorage.getItem(DRAFTS_KEY);
+      const key = getDraftsKey(userId);
+      const data = localStorage.getItem(key);
       return data ? JSON.parse(data) : {};
     } catch {
       return {};
     }
   },
 
-  getDraft(formId) {
-    const drafts = this.getDrafts();
+  getDraft(formId, userId) {
+    const drafts = this.getDrafts(userId);
     return drafts[formId] || null;
   },
 
-  saveDraft(formId, formData, formTitle = "Draft Form") {
-    const drafts = this.getDrafts();
+  saveDraft(formId, formData, formTitle = "Draft Form", userId) {
+    const key = getDraftsKey(userId);
+    const drafts = this.getDrafts(userId);
     drafts[formId] = {
       formId,
       title: formTitle,
       values: formData,
       updatedAt: new Date().toISOString(),
     };
-    localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts));
+    localStorage.setItem(key, JSON.stringify(drafts));
     return drafts[formId];
   },
 
-  deleteDraft(formId) {
-    const drafts = this.getDrafts();
+  deleteDraft(formId, userId) {
+    const key = getDraftsKey(userId);
+    const drafts = this.getDrafts(userId);
     if (drafts[formId]) {
       delete drafts[formId];
-      localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts));
+      localStorage.setItem(key, JSON.stringify(drafts));
     }
   },
 
-  getDraftsCount() {
-    return Object.keys(this.getDrafts()).length;
+  getDraftsCount(userId) {
+    return Object.keys(this.getDrafts(userId)).length;
   },
 
   // --- Settings ---

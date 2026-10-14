@@ -50,3 +50,65 @@ def test_auth_protected_me_endpoint_requires_token(client):
     # Invalid token format
     res2 = client.get("/api/auth/me", headers={"Authorization": "Bearer not-a-valid-jwt"})
     assert res2.status_code == 401
+
+
+def test_login_followed_by_authenticated_get_forms(client):
+    # 1. Register a dedicated test user
+    email = "form.viewer@example.com"
+    pwd = "ViewerPassword123!"
+    client.post("/api/auth/register", json={
+        "email": email,
+        "password": pwd,
+        "full_name": "Form Viewer"
+    })
+
+    # 2. Login to receive authentic JWT access token
+    login_res = client.post("/api/auth/login", json={
+        "email": email,
+        "password": pwd
+    })
+    assert login_res.status_code == 200
+    token = login_res.json()["token"]
+    assert token and isinstance(token, str)
+
+    # 3. Authenticated request to GET /api/forms succeeds with 200 OK
+    forms_res = client.get("/api/forms", headers={"Authorization": f"Bearer {token}"})
+    assert forms_res.status_code == 200
+    assert isinstance(forms_res.json(), list)
+
+
+def test_get_forms_token_scenarios(client):
+    from datetime import timedelta
+    from app.core.security import create_access_token
+
+    # 1. Missing token (guest access to public forms) returns 200 OK
+    guest_res = client.get("/api/forms")
+    assert guest_res.status_code == 200
+    assert isinstance(guest_res.json(), list)
+
+    # 2. Invalid / malformed token returns 401
+    invalid_res = client.get("/api/forms", headers={"Authorization": "Bearer not-a-valid-jwt"})
+    assert invalid_res.status_code == 401
+    assert invalid_res.json()["detail"] == "Invalid authentication token."
+
+    # 3. Mock placeholder token (e.g. sess_...) returns 401
+    mock_res = client.get("/api/forms", headers={"Authorization": "Bearer sess_demo_token_8849"})
+    assert mock_res.status_code == 401
+    assert mock_res.json()["detail"] == "Invalid authentication token."
+
+    # 4. Expired token returns 401 with specific expiration detail
+    expired_token = create_access_token(
+        subject=99999,
+        role="USER",
+        token_version=1,
+        expires_delta=timedelta(seconds=-10)
+    )
+    expired_res = client.get("/api/forms", headers={"Authorization": f"Bearer {expired_token}"})
+    assert expired_res.status_code == 401
+    assert expired_res.json()["detail"] == "Authentication token has expired. Please log in again."
+
+    # 5. Invalid authorization header format returns 401
+    malformed_header_res = client.get("/api/forms", headers={"Authorization": "TokenWithoutBearerPrefix"})
+    assert malformed_header_res.status_code == 401
+    assert "Expected 'Bearer <token>'" in malformed_header_res.json()["detail"]
+
