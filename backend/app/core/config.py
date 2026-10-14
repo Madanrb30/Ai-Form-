@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
     SEED_DEMO_USER: bool = False  # Disabled by default; prohibited in production
 
+    # One-Time Super Admin Bootstrap
+    BOOTSTRAP_SECRET_KEY: str = ""
+    BOOTSTRAP_SUPER_ADMIN_EMAIL: str = ""
+    BOOTSTRAP_SUPER_ADMIN_PASSWORD: str = ""
+    BOOTSTRAP_SUPER_ADMIN_NAME: str = "Super Administrator"
+
     # File Uploads
     UPLOAD_DIR: str = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
     MAX_UPLOAD_SIZE_BYTES: int = 15 * 1024 * 1024  # 15 MB
@@ -124,6 +130,15 @@ class Settings(BaseSettings):
             raise ValueError(
                 "Production configuration error: Wildcard '*' is not permitted in CORS_ORIGINS when credentials are enabled."
             )
+
+        # 5. Production Bootstrap Secret Key check
+        bootstrap_key = (self.BOOTSTRAP_SECRET_KEY or "").strip()
+        if is_production and bootstrap_key:
+            if len(bootstrap_key) < 32 or bootstrap_key in INSECURE_SECRETS:
+                raise ValueError(
+                    "Production configuration error: When BOOTSTRAP_SECRET_KEY is configured in production, "
+                    "it must be at least 32 characters and cryptographically secure."
+                )
 
         return self
 

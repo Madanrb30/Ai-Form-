@@ -100,6 +100,29 @@ def init_db():
         finally:
             db.close()
 
+    # Initial Super Admin bootstrap on startup if configured in environment and no active super admin exists
+    if settings.BOOTSTRAP_SECRET_KEY and settings.BOOTSTRAP_SUPER_ADMIN_EMAIL and settings.BOOTSTRAP_SUPER_ADMIN_PASSWORD:
+        db = SessionLocal()
+        try:
+            from app.services.bootstrap_service import has_active_super_admin, provision_super_admin
+            if not has_active_super_admin(db):
+                provision_super_admin(
+                    db=db,
+                    email=settings.BOOTSTRAP_SUPER_ADMIN_EMAIL,
+                    password=settings.BOOTSTRAP_SUPER_ADMIN_PASSWORD,
+                    full_name=settings.BOOTSTRAP_SUPER_ADMIN_NAME or "Super Administrator",
+                    bootstrap_key=settings.BOOTSTRAP_SECRET_KEY,
+                    method="env_init_db",
+                )
+                logger.info(
+                    f"Super Admin '{settings.BOOTSTRAP_SUPER_ADMIN_EMAIL}' provisioned during initialization. "
+                    "Please unset BOOTSTRAP_SUPER_ADMIN_PASSWORD and BOOTSTRAP_SECRET_KEY from environment."
+                )
+        except Exception as e:
+            logger.warning(f"Bootstrap initialization notice: {e}")
+        finally:
+            db.close()
+
     logger.info("Database tables initialized successfully without deleting existing data.")
 
 

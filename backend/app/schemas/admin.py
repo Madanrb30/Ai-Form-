@@ -81,3 +81,18 @@ class AuditLogListResponse(BaseModel):
     page: int
     limit: int
     total_pages: int
+
+
+class SuperAdminBootstrapRequest(BaseModel):
+    email: str = Field(..., max_length=255, description="Initial Super Admin email address")
+    password: str = Field(..., min_length=8, max_length=128, description="Password (8-128 characters)")
+    full_name: Optional[str] = Field(default="Super Administrator", max_length=100)
+    bootstrap_key: Optional[str] = Field(
+        default=None,
+        description="Bootstrap secret key (alternatively provide via X-Bootstrap-Key header)"
+    )
+
+
+class SuperAdminBootstrapResponse(BaseModel):
+    message: str
+    user: UserAdminResponse

@@ -1,6 +1,6 @@
 import math
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Header, status, Request
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -17,9 +17,19 @@ from app.schemas.admin import (
     UserRoleUpdateRequest,
     AuditLogResponse,
     AuditLogListResponse,
+    SuperAdminBootstrapRequest,
+    SuperAdminBootstrapResponse,
 )
 from app.api.deps import get_current_admin, get_current_super_admin
 from app.services.audit_service import record_audit_log
+from app.services.bootstrap_service import (
+    provision_super_admin,
+    BootstrapDisabledError,
+    InvalidBootstrapSecretError,
+    SuperAdminAlreadyExistsError,
+    UserAlreadyExistsError,
+    WeakPasswordError,
+)
 from app.core.config import settings
 from app.core.logging import logger
 
@@ -376,4 +386,64 @@ def list_audit_logs(
         page=page,
         limit=limit,
         total_pages=total_pages,
+    )
+
+
+@router.post("/bootstrap", response_model=SuperAdminBootstrapResponse, status_code=status.HTTP_201_CREATED)
+def bootstrap_initial_super_admin(
+    req: SuperAdminBootstrapRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    x_bootstrap_key: Optional[str] = Header(None, alias="X-Bootstrap-Key"),
+):
+    """
+    One-time administrative bootstrap endpoint for the initial Super Administrator.
+    - Requires server-side BOOTSTRAP_SECRET_KEY via X-Bootstrap-Key header or bootstrap_key body field.
+    - Disallowed if any active Super Administrator already exists.
+    - Prohibits silent promotion or credential overwriting of existing accounts.
+    - Transactionally provisions the account and logs an immutable audit event.
+    """
+    bootstrap_key = x_bootstrap_key or req.bootstrap_key
+    client_ip = request.client.host if request.client else None
+
+    try:
+        new_super_admin = provision_super_admin(
+            db=db,
+            email=req.email,
+            password=req.password,
+            full_name=req.full_name,
+            bootstrap_key=bootstrap_key,
+            client_ip=client_ip,
+            method="api",
+        )
+    except BootstrapDisabledError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e),
+        )
+    except InvalidBootstrapSecretError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e),
+        )
+    except SuperAdminAlreadyExistsError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        )
+    except UserAlreadyExistsError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        )
+    except (WeakPasswordError, ValueError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+    return SuperAdminBootstrapResponse(
+        message="Initial Super Administrator provisioned successfully. "
+                "Please unset or remove BOOTSTRAP_SECRET_KEY from server environment.",
+        user=UserAdminResponse.model_validate(new_super_admin),
     )
