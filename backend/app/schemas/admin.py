@@ -10,6 +10,24 @@ class AdminStatsResponse(BaseModel):
     suspended_users: int
     total_audit_logs: int
     users_by_role: Dict[str, int]
+    total_forms: int = 0
+    total_submissions: int = 0
+
+
+class SystemHealthResponse(BaseModel):
+    status: str
+    project_name: str
+    version: str
+    environment: str
+    database_status: str
+    database_type: str
+    ai_mode: str
+    ai_provider: str
+    ai_model: str
+    transcription_model: str
+    max_audio_size_mb: int
+    jwt_algorithm: str
+    token_expiry_hours: int
 
 
 class UserAdminResponse(BaseModel):

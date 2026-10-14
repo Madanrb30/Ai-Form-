@@ -415,3 +415,66 @@ def test_16_admin_users_status_filter(client, rbac_users, db_session):
     )
     assert reactivate_res.status_code == 200
 
+
+def test_17_super_admin_system_health_endpoint(client, rbac_users):
+    """17. GET /api/admin/system-health is accessible strictly to SUPER_ADMIN and never leaks secrets."""
+    token_user = rbac_users["token_user"]
+    token_admin = rbac_users["token_admin"]
+    token_super = rbac_users["token_super"]
+
+    # 1. Unauthenticated -> 401
+    assert client.get("/api/admin/system-health").status_code == 401
+
+    # 2. Regular user -> 403
+    assert client.get("/api/admin/system-health", headers={"Authorization": f"Bearer {token_user}"}).status_code == 403
+
+    # 3. Regular admin -> 403 (Super Admin only)
+    assert client.get("/api/admin/system-health", headers={"Authorization": f"Bearer {token_admin}"}).status_code == 403
+
+    # 4. Super Admin -> 200
+    res = client.get("/api/admin/system-health", headers={"Authorization": f"Bearer {token_super}"})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "ok"
+    assert "version" in data
+    assert "database_status" in data
+    assert "ai_mode" in data
+    assert "jwt_algorithm" in data
+
+    # Verify no secret leakage
+    for forbidden in ["secret", "jwt_secret_key", "groq_api_key", "password", "token"]:
+        assert forbidden not in data
+
+
+def test_18_audit_rejections_and_enhanced_filters(client, rbac_users, db_session):
+    """18. Audit log records rejected actions and supports multi-parameter filtering."""
+    token_super = rbac_users["token_super"]
+    super_admin_id = rbac_users["super_admin"].id
+
+    # Attempt forbidden demotion of final active SUPER_ADMIN -> should record ROLE_CHANGE_REJECTED
+    demote_res = client.put(
+        f"/api/admin/users/{super_admin_id}/role",
+        json={"role": "ADMIN"},
+        headers={"Authorization": f"Bearer {token_super}"}
+    )
+    assert demote_res.status_code == 400
+
+    # Query audit logs with action=ROLE_CHANGE_REJECTED
+    audit_res = client.get(
+        "/api/admin/audit-logs?action=ROLE_CHANGE_REJECTED",
+        headers={"Authorization": f"Bearer {token_super}"}
+    )
+    assert audit_res.status_code == 200
+    items = audit_res.json()["items"]
+    assert any(log["action"] == "ROLE_CHANGE_REJECTED" and log["status"] == "FAILURE" for log in items)
+
+    # Test filtering by status=FAILURE
+    audit_failure_res = client.get(
+        "/api/admin/audit-logs?status=FAILURE",
+        headers={"Authorization": f"Bearer {token_super}"}
+    )
+    assert audit_failure_res.status_code == 200
+    for log in audit_failure_res.json()["items"]:
+        assert log["status"] == "FAILURE"
+
+

@@ -6,8 +6,11 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.user import User, UserRole
 from app.models.audit_log import AuditLog
+from app.models.form import Form
+from app.models.submission import Submission
 from app.schemas.admin import (
     AdminStatsResponse,
+    SystemHealthResponse,
     UserAdminResponse,
     UserListResponse,
     UserStatusUpdateRequest,
@@ -17,6 +20,7 @@ from app.schemas.admin import (
 )
 from app.api.deps import get_current_admin, get_current_super_admin
 from app.services.audit_service import record_audit_log
+from app.core.config import settings
 from app.core.logging import logger
 
 router = APIRouter(prefix="/admin", tags=["Administration"])
@@ -36,6 +40,8 @@ def get_admin_stats(
     active_users = db.query(User).filter(User.is_active == True).count()
     suspended_users = db.query(User).filter(User.is_active == False).count()
     total_audit_logs = db.query(AuditLog).count()
+    total_forms = db.query(Form).count()
+    total_submissions = db.query(Submission).count()
 
     users_by_role = {
         "USER": db.query(User).filter(User.role == "USER").count(),
@@ -49,6 +55,8 @@ def get_admin_stats(
         suspended_users=suspended_users,
         total_audit_logs=total_audit_logs,
         users_by_role=users_by_role,
+        total_forms=total_forms,
+        total_submissions=total_submissions,
     )
 
 
@@ -166,6 +174,17 @@ def update_user_status(
             User.is_active == True
         ).count()
         if active_super_admins <= 1:
+            record_audit_log(
+                db=db,
+                action="USER_SUSPENSION_REJECTED",
+                actor_id=current_user.id,
+                actor_email=current_user.email,
+                target_type="User",
+                target_id=str(target_user.id),
+                details={"reason": "Cannot suspend final active Super Administrator"},
+                ip_address=request.client.host if request.client else None,
+                status="FAILURE",
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Cannot suspend the final active Super Administrator."
@@ -225,6 +244,17 @@ def update_user_role(
             User.is_active == True
         ).count()
         if active_super_admins <= 1:
+            record_audit_log(
+                db=db,
+                action="ROLE_CHANGE_REJECTED",
+                actor_id=current_user.id,
+                actor_email=current_user.email,
+                target_type="User",
+                target_id=str(target_user.id),
+                details={"attempted_role": req.role.value, "reason": "Cannot demote final active Super Administrator"},
+                ip_address=request.client.host if request.client else None,
+                status="FAILURE",
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Cannot demote the final active Super Administrator."
@@ -254,11 +284,52 @@ def update_user_role(
     return UserAdminResponse.model_validate(target_user)
 
 
+@router.get("/system-health", response_model=SystemHealthResponse)
+def get_system_health(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_super_admin),
+):
+    """
+    Approved operational system information for Super Administrators.
+    Exposes no secrets, environment variables, or API keys.
+    """
+    from sqlalchemy import text
+    db_status = "healthy"
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception:
+        db_status = "unhealthy"
+
+    from app.services.ai_provider import ai_provider
+    is_ai_active = ai_provider.is_groq_configured()
+    ai_mode = "groq" if is_ai_active else "demo"
+
+    return SystemHealthResponse(
+        status="ok",
+        project_name=settings.PROJECT_NAME,
+        version="1.0.0",
+        environment=settings.ENVIRONMENT,
+        database_status=db_status,
+        database_type="SQLite",
+        ai_mode=ai_mode,
+        ai_provider=settings.AI_PROVIDER,
+        ai_model=settings.GROQ_MODEL if is_ai_active else "offline_demo_generator",
+        transcription_model=settings.GROQ_TRANSCRIPTION_MODEL if is_ai_active else "offline_demo",
+        max_audio_size_mb=int(settings.MAX_AUDIO_SIZE_BYTES / (1024 * 1024)),
+        jwt_algorithm=settings.JWT_ALGORITHM,
+        token_expiry_hours=int(settings.ACCESS_TOKEN_EXPIRE_MINUTES / 60),
+    )
+
+
 @router.get("/audit-logs", response_model=AuditLogListResponse)
 def list_audit_logs(
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(20, ge=1, le=100, description="Items per page (max 100)"),
     action: Optional[str] = Query(None, description="Filter by action name"),
+    status: Optional[str] = Query(None, description="Filter by status (SUCCESS, FAILURE)"),
+    actor: Optional[str] = Query(None, description="Filter by actor email or ID"),
+    target: Optional[str] = Query(None, description="Filter by target ID or type"),
+    search: Optional[str] = Query(None, description="Search across action, details, actor_email"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin),
 ):
@@ -269,8 +340,29 @@ def list_audit_logs(
     """
     query = db.query(AuditLog)
 
-    if action:
+    if action and action.strip().upper() != "ALL":
         query = query.filter(AuditLog.action == action.strip().upper())
+
+    if status and status.strip().upper() != "ALL":
+        query = query.filter(AuditLog.status == status.strip().upper())
+
+    if actor and actor.strip():
+        actor_term = f"%{actor.strip().lower()}%"
+        query = query.filter(AuditLog.actor_email.ilike(actor_term))
+
+    if target and target.strip():
+        target_term = f"%{target.strip().lower()}%"
+        query = query.filter(
+            (AuditLog.target_id.ilike(target_term)) | (AuditLog.target_type.ilike(target_term))
+        )
+
+    if search and search.strip():
+        search_pattern = f"%{search.strip().lower()}%"
+        query = query.filter(
+            (AuditLog.action.ilike(search_pattern))
+            | (AuditLog.actor_email.ilike(search_pattern))
+            | (AuditLog.details.ilike(search_pattern))
+        )
 
     total = query.count()
     total_pages = max(1, math.ceil(total / limit))

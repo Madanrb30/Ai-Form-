@@ -139,4 +139,66 @@ describe("Admin API Service Unit Tests", () => {
     expect(requestedUrl).toContain("/admin/audit-logs");
     expect(requestedUrl).toContain("action=USER_SUSPENDED");
   });
+
+  it("calls updateUserRole and dispatches PUT request with desired role", async () => {
+    const mockUpdatedUser = {
+      id: 5,
+      email: "engineer@example.com",
+      role: "ADMIN",
+      is_active: true,
+      created_at: "2026-10-14T10:00:00Z",
+    };
+
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      json: async () => mockUpdatedUser,
+    });
+
+    const res = await api.updateUserRole(5, "ADMIN");
+    expect(res.role).toBe("ADMIN");
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/admin/users/5/role"),
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({ role: "ADMIN" }),
+      })
+    );
+  });
+
+  it("calls getSystemHealth and receives operational metrics", async () => {
+    const mockHealth = {
+      status: "ok",
+      project_name: "AI Voice Form Assistant",
+      version: "1.0.0",
+      environment: "development",
+      database_status: "healthy",
+      database_type: "SQLite",
+      ai_mode: "demo",
+      ai_provider: "groq",
+      ai_model: "llama-3.3-70b-versatile",
+      transcription_model: "whisper-large-v3-turbo",
+      max_audio_size_mb: 25,
+      jwt_algorithm: "HS256",
+      token_expiry_hours: 168,
+    };
+
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      json: async () => mockHealth,
+    });
+
+    const health = await api.getSystemHealth();
+    expect(health.status).toBe("ok");
+    expect(health.database_status).toBe("healthy");
+    expect(health.ai_provider).toBe("groq");
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/admin/system-health"),
+      expect.any(Object)
+    );
+  });
 });
+

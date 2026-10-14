@@ -9,12 +9,13 @@ import {
   Sparkles,
   ChevronRight,
   ShieldCheck,
+  Crown,
   X,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 
 export default function Sidebar({ currentView, setView, isMobileOpen, setIsMobileOpen }) {
-  const { user, logout, isAdmin } = useAuth();
+  const { user, logout, isAdmin, isSuperAdmin } = useAuth();
 
   const navItems = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -23,6 +24,7 @@ export default function Sidebar({ currentView, setView, isMobileOpen, setIsMobil
     { id: "history", label: "History", icon: History },
     { id: "settings", label: "Settings", icon: Settings },
     ...(isAdmin ? [{ id: "admin", label: "Admin Console", icon: ShieldCheck }] : []),
+    ...(isSuperAdmin ? [{ id: "super-admin", label: "Super Admin", icon: Crown }] : []),
   ];
 
   const handleNavClick = (viewName) => {

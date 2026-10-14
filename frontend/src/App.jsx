@@ -12,6 +12,7 @@ import HistoryPage from "./pages/HistoryPage";
 import SettingsPage from "./pages/SettingsPage";
 import SubmissionsPage from "./pages/SubmissionsPage";
 import AdminDashboardPage from "./pages/AdminDashboardPage";
+import SuperAdminDashboardPage from "./pages/SuperAdminDashboardPage";
 
 function MainApp() {
   const { isAuthenticated } = useAuth();
@@ -87,6 +88,10 @@ function MainApp() {
 
       {currentView.name === "admin" && (
         <AdminDashboardPage setView={setView} />
+      )}
+
+      {currentView.name === "super-admin" && (
+        <SuperAdminDashboardPage setView={setView} />
       )}
     </AppLayout>
   );

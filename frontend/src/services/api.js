@@ -241,4 +241,5 @@ export const api = {
     const q = new URLSearchParams(params).toString();
     return request(`/admin/audit-logs${q ? `?${q}` : ""}`);
   },
+  getSystemHealth: () => request("/admin/system-health"),
 };
