@@ -56,7 +56,12 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return False
 
 
-def create_access_token(subject: Any, expires_delta: Optional[timedelta] = None) -> str:
+def create_access_token(
+    subject: Any,
+    role: str = "USER",
+    token_version: int = 1,
+    expires_delta: Optional[timedelta] = None
+) -> str:
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
     else:
@@ -65,6 +70,8 @@ def create_access_token(subject: Any, expires_delta: Optional[timedelta] = None)
     to_encode = {
         "exp": expire,
         "sub": str(subject),
+        "role": str(role),
+        "token_version": int(token_version),
         "iat": datetime.utcnow()
     }
     encoded_jwt = jwt.encode(

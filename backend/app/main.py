@@ -8,6 +8,7 @@ from app.api.health import router as health_router
 from app.api.forms import router as forms_router
 from app.api.auth import router as auth_router
 from app.api.voice import router as voice_router
+from app.api.admin import router as admin_router
 
 
 @asynccontextmanager
@@ -42,6 +43,7 @@ app.include_router(health_router, prefix="/api")
 app.include_router(forms_router, prefix="/api")
 app.include_router(auth_router, prefix="/api")
 app.include_router(voice_router, prefix="/api")
+app.include_router(admin_router, prefix="/api")
 
 from fastapi.responses import JSONResponse
 from app.services.ai_provider import AIProviderError

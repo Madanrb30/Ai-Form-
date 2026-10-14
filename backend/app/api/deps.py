@@ -76,6 +76,21 @@ def get_current_user_optional(
             detail="User account associated with this token was not found."
         )
 
+    # Check account suspension
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account has been suspended. Please contact an administrator."
+        )
+
+    # Check token version revocation (e.g. after suspension or role change)
+    token_version = payload.get("token_version")
+    if token_version is not None and token_version != user.token_version:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication token has been revoked. Please log in again."
+        )
+
     return user
 
 
@@ -89,4 +104,42 @@ def get_current_user_required(
             detail="Authentication credentials are required to access this resource."
         )
     return user
+
+
+def require_roles(*allowed_roles: str):
+    """
+    Reusable authorization dependency factory.
+    Verifies that the authenticated user possesses one of the allowed roles.
+    Raises 401 if unauthenticated, 403 if authenticated but lacking permitted role.
+    Records audit attempt on unauthorized access.
+    """
+    def role_checker(
+        current_user: User = Depends(get_current_user_required),
+        db: Session = Depends(get_db)
+    ) -> User:
+        if current_user.role not in allowed_roles:
+            try:
+                from app.services.audit_service import record_audit_log
+                record_audit_log(
+                    db=db,
+                    action="UNAUTHORIZED_ROLE_ACCESS_DENIED",
+                    actor_id=current_user.id,
+                    actor_email=current_user.email,
+                    target_type="Role",
+                    target_id=str(allowed_roles),
+                    details={"user_role": current_user.role, "required_roles": list(allowed_roles)},
+                    status="DENIED"
+                )
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to access this resource."
+            )
+        return current_user
+    return role_checker
+
+
+get_current_admin = require_roles("ADMIN", "SUPER_ADMIN")
+get_current_super_admin = require_roles("SUPER_ADMIN")
 

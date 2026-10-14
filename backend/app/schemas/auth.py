@@ -20,7 +20,9 @@ class UserResponse(BaseModel):
     email: str
     full_name: Optional[str] = None
     role: str
+    title: Optional[str] = None
     avatar: str
+    is_active: bool = True
 
 
 class AuthTokenResponse(BaseModel):

@@ -107,6 +107,7 @@ export const authService = {
         if (res && res.token && res.user) {
           user.token = res.token;
           user.id = String(res.user.id);
+          user.role = res.user.role || "USER";
           localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
         }
       })

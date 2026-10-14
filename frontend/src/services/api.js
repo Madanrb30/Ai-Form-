@@ -214,4 +214,25 @@ export const api = {
     const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
     return request(`/forms/${formId}/draft${query}`, { method: "DELETE" });
   },
+
+  // Administration & RBAC APIs
+  getAdminUsers: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return request(`/admin/users${q ? `?${q}` : ""}`);
+  },
+  getAdminUser: (userId) => request(`/admin/users/${userId}`),
+  updateUserStatus: (userId, isActive, reason = null) =>
+    request(`/admin/users/${userId}/status`, {
+      method: "PUT",
+      body: JSON.stringify({ is_active: isActive, reason }),
+    }),
+  updateUserRole: (userId, role) =>
+    request(`/admin/users/${userId}/role`, {
+      method: "PUT",
+      body: JSON.stringify({ role }),
+    }),
+  getAdminAuditLogs: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return request(`/admin/audit-logs${q ? `?${q}` : ""}`);
+  },
 };

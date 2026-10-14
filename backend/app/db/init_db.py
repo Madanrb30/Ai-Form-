@@ -46,6 +46,32 @@ def init_db():
                 conn.execute(text("ALTER TABLE drafts ADD COLUMN session_id VARCHAR(100)"))
                 logger.info("Added session_id column to drafts table.")
 
+            # Check users columns for RBAC
+            res = conn.execute(text("PRAGMA table_info(users)"))
+            user_cols = [row[1] for row in res.fetchall()]
+            if "title" not in user_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN title VARCHAR(100)"))
+                logger.info("Added title column to users table.")
+            if "is_active" not in user_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT 1 NOT NULL"))
+                logger.info("Added is_active column to users table.")
+            if "token_version" not in user_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN token_version INTEGER DEFAULT 1 NOT NULL"))
+                logger.info("Added token_version column to users table.")
+
+            # Safe backward-compatibility migration for existing user roles:
+            # Normalize legacy job titles (e.g. "Product Lead", "Manager", "Engineer") to title, and set role to USER
+            conn.execute(text("""
+                UPDATE users
+                SET title = role
+                WHERE title IS NULL AND role NOT IN ('USER', 'ADMIN', 'SUPER_ADMIN')
+            """))
+            conn.execute(text("""
+                UPDATE users
+                SET role = 'USER'
+                WHERE role NOT IN ('USER', 'ADMIN', 'SUPER_ADMIN')
+            """))
+
             conn.commit()
         except Exception as e:
             logger.warning(f"Column check or migration notice: {e}")
@@ -62,7 +88,8 @@ def init_db():
                     email=default_email,
                     hashed_password=get_password_hash("password123"),
                     full_name="Madan RB",
-                    role="Product Lead",
+                    role="USER",
+                    title="Product Lead",
                     avatar="MR",
                 )
                 db.add(default_user)

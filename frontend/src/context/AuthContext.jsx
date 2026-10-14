@@ -34,10 +34,17 @@ export function AuthProvider({ children }) {
     return updated;
   };
 
+  const role = user?.role ? String(user.role).toUpperCase() : "USER";
+  const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
+  const isSuperAdmin = role === "SUPER_ADMIN";
+
   return (
     <AuthContext.Provider
       value={{
         user,
+        role,
+        isAdmin,
+        isSuperAdmin,
         isAuthenticated,
         login,
         register,
