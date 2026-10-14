@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+:root {
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color-scheme: light;
+  --bg-primary: #FFFFFF;
+  --text-primary: #111111;
+  --sidebar-bg: #0B0B0B;
+  --sidebar-text: #F5F5F5;
+  --bg-secondary: #F7F7F7;
+  --border-color: #E5E5E5;
+  --text-muted: #737373;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: #FFFFFF;
+  color: #111111;
+  min-height: 100vh;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+#root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Custom subtle scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #E5E5E5;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #D4D4D4;
+}
+
+/* Audio waveform animations */
+@keyframes waveBar {
+  0%, 100% {
+    transform: scaleY(0.2);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.animate-wave-1 { animation: waveBar 0.8s ease-in-out infinite; }
+.animate-wave-2 { animation: waveBar 0.7s ease-in-out infinite 0.15s; }
+.animate-wave-3 { animation: waveBar 0.9s ease-in-out infinite 0.3s; }
+.animate-wave-4 { animation: waveBar 0.65s ease-in-out infinite 0.1s; }
+.animate-wave-5 { animation: waveBar 0.85s ease-in-out infinite 0.25s; }
+
+/* Subtle AI glow highlight */
+@keyframes aiHighlight {
+  0% {
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.4);
+    background-color: rgba(99, 102, 241, 0.05);
+  }
+  100% {
+    box-shadow: 0 0 0 0px transparent;
+    background-color: transparent;
+  }
+}
+
+.ai-field-highlight {
+  animation: aiHighlight 2.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
