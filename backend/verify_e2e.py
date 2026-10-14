@@ -5,6 +5,7 @@ form generation, submission lifecycle, and restart resilience.
 import os
 import sys
 import io
+import time
 import wave
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
@@ -28,6 +29,17 @@ def run_e2e_verification():
         assert health.status_code == 200
         print(f"Health Response: {health.json()}")
 
+        print("--- 2b. User Authentication ---")
+        user_email = f"e2e_lead_{int(time.time())}@example.com"
+        reg_res = client.post(
+            "/api/auth/register",
+            json={"email": user_email, "password": "StrongPassword123!", "full_name": "E2E Lead"}
+        )
+        assert reg_res.status_code == 201
+        auth_token = reg_res.json()["token"]
+        auth_headers = {"Authorization": f"Bearer {auth_token}"}
+        print("User registered and authenticated successfully")
+
         print("--- 3. Form Generation (Demo Mode) ---")
         gen_res = client.post(
             "/api/forms/generate",
@@ -45,7 +57,8 @@ def run_e2e_verification():
                 "title": gen_data["schema_data"]["title"],
                 "description": gen_data["schema_data"].get("description"),
                 "schema_json": gen_data["schema_data"]
-            }
+            },
+            headers=auth_headers
         )
         assert save_res.status_code == 201
         form_id = save_res.json()["id"]
@@ -201,13 +214,13 @@ def run_e2e_verification():
         print(f"Submission recorded with ID: {sub_id}")
 
         print("--- 9. Retrieve Submissions & Export PDF ---")
-        get_subs = client.get(f"/api/forms/{form_id}/submissions")
+        get_subs = client.get(f"/api/forms/{form_id}/submissions", headers=auth_headers)
         assert get_subs.status_code == 200
         subs_list = get_subs.json()
         assert len(subs_list) >= 1
         print(f"Retrieved {len(subs_list)} submission(s)")
 
-        pdf_res = client.get(f"/api/forms/{form_id}/submissions/{sub_id}/pdf")
+        pdf_res = client.get(f"/api/forms/{form_id}/submissions/{sub_id}/pdf", headers=auth_headers)
         assert pdf_res.status_code == 200
         assert pdf_res.headers["content-type"] == "application/pdf"
         assert pdf_res.content.startswith(b"%PDF")
@@ -216,11 +229,11 @@ def run_e2e_verification():
     print("--- 10. Simulating Application Restart & Persistence Verification ---")
     # Fresh client instance simulating a restart
     with TestClient(app) as client_after_restart:
-        re_form = client_after_restart.get(f"/api/forms/{form_id}")
+        re_form = client_after_restart.get(f"/api/forms/{form_id}", headers=auth_headers)
         assert re_form.status_code == 200
         print(f"Persisted Form Verified: {re_form.json()['title']} (ID {form_id})")
 
-        re_subs = client_after_restart.get(f"/api/forms/{form_id}/submissions")
+        re_subs = client_after_restart.get(f"/api/forms/{form_id}/submissions", headers=auth_headers)
         assert re_subs.status_code == 200
         print(f"Persisted Submissions Verified: Found {len(re_subs.json())} recorded responses.")
 

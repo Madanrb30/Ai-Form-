@@ -141,7 +141,7 @@ def test_voice_map_invalid_dropdown_not_selected():
     assert "department" not in mapped
 
 
-def test_voice_map_endpoint_integration(client):
+def test_voice_map_endpoint_integration(client, auth_headers):
     res = client.post(
         "/api/forms",
         json={
@@ -155,7 +155,8 @@ def test_voice_map_endpoint_integration(client):
                     {"name": "email", "label": "Email Address", "type": "email", "required": True}
                 ]
             }
-        }
+        },
+        headers=auth_headers
     )
     assert res.status_code == 201
     form_id = res.json()["id"]

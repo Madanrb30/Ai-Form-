@@ -19,7 +19,7 @@ def test_ai_malformed_json_extraction():
         extract_json_from_ai_text("Sorry, I cannot create this form.")
 
 
-def test_sql_injection_resilience(client):
+def test_sql_injection_resilience(client, auth_headers):
     # Harmless SQL injection payload
     injection_title = "Form'); DROP TABLE forms;--"
     payload = {
@@ -32,17 +32,17 @@ def test_sql_injection_resilience(client):
             ]
         }
     }
-    res = client.post("/api/forms", json=payload)
+    res = client.post("/api/forms", json=payload, headers=auth_headers)
     assert res.status_code == 201
     form_id = res.json()["id"]
 
     # Verify database table still exists and data was treated as literal string
-    get_res = client.get(f"/api/forms/{form_id}")
+    get_res = client.get(f"/api/forms/{form_id}", headers=auth_headers)
     assert get_res.status_code == 200
     assert get_res.json()["title"] == injection_title
 
     # Other forms can still be listed
-    list_res = client.get("/api/forms")
+    list_res = client.get("/api/forms", headers=auth_headers)
     assert list_res.status_code == 200
 
 
@@ -56,13 +56,13 @@ def test_no_secret_leak_in_health_or_api(client):
         assert settings.GEMINI_API_KEY not in str(data)
 
 
-def test_invalid_and_boundary_requests(client):
+def test_invalid_and_boundary_requests(client, auth_headers):
     # 1. Non-existent form
     assert client.get("/api/forms/999999").status_code == 404
-    assert client.put("/api/forms/999999", json={"title": "new"}).status_code == 404
-    assert client.delete("/api/forms/999999").status_code == 404
+    assert client.put("/api/forms/999999", json={"title": "new"}, headers=auth_headers).status_code == 404
+    assert client.delete("/api/forms/999999", headers=auth_headers).status_code == 404
     assert client.post("/api/forms/999999/submissions", json={"response_json": {}}).status_code == 404
-    assert client.get("/api/forms/999999/submissions").status_code == 404
+    assert client.get("/api/forms/999999/submissions", headers=auth_headers).status_code == 404
     assert client.post("/api/forms/999999/voice-map", json={"transcript": "hello"}).status_code == 404
 
     # 2. Invalid schema (empty fields list)
@@ -73,7 +73,7 @@ def test_invalid_and_boundary_requests(client):
             "fields": []
         }
     }
-    assert client.post("/api/forms", json=bad_schema).status_code == 422
+    assert client.post("/api/forms", json=bad_schema, headers=auth_headers).status_code == 422
 
 
 def test_demo_mode_archetypes():

@@ -25,8 +25,21 @@ def test_generate_form_empty_prompt(client):
     assert response.status_code in (400, 422)
 
 
-def test_form_crud_lifecycle(client):
-    # 1. Create Form
+def test_anonymous_form_creation_rejected(client):
+    payload = {
+        "title": "Anonymous Attempt",
+        "schema_json": {
+            "title": "Anonymous Attempt",
+            "fields": [{"name": "field1", "label": "Field 1", "type": "text"}]
+        }
+    }
+    # Unauthenticated persistent form creation must be rejected
+    res = client.post("/api/forms", json=payload)
+    assert res.status_code == 401
+
+
+def test_form_crud_lifecycle(client, auth_headers):
+    # 1. Create Form (Authenticated)
     payload = {
         "title": "Job Application Form",
         "description": "Candidate application details",
@@ -58,46 +71,47 @@ def test_form_crud_lifecycle(client):
             ]
         }
     }
-    create_res = client.post("/api/forms", json=payload)
+    create_res = client.post("/api/forms", json=payload, headers=auth_headers)
     assert create_res.status_code == 201
     form_data = create_res.json()
     form_id = form_data["id"]
     assert form_data["title"] == "Job Application Form"
     assert len(form_data["schema_json"]["fields"]) == 3
 
-    # 2. List Forms
-    list_res = client.get("/api/forms")
+    # 2. List Forms (Authenticated sees own created form)
+    list_res = client.get("/api/forms", headers=auth_headers)
     assert list_res.status_code == 200
     forms = list_res.json()
     assert any(f["id"] == form_id for f in forms)
 
     # 3. Get Form by ID
-    get_res = client.get(f"/api/forms/{form_id}")
+    get_res = client.get(f"/api/forms/{form_id}", headers=auth_headers)
     assert get_res.status_code == 200
     assert get_res.json()["id"] == form_id
 
-    # 4. Update Form
+    # 4. Update Form (Owner)
     update_res = client.put(
         f"/api/forms/{form_id}",
-        json={"title": "Updated Job Application Form"}
+        json={"title": "Updated Job Application Form"},
+        headers=auth_headers
     )
     assert update_res.status_code == 200
     assert update_res.json()["title"] == "Updated Job Application Form"
 
     # 5. Non-existent form
-    missing_res = client.get("/api/forms/99999")
+    missing_res = client.get("/api/forms/99999", headers=auth_headers)
     assert missing_res.status_code == 404
 
-    # 6. Delete Form
-    del_res = client.delete(f"/api/forms/{form_id}")
+    # 6. Delete Form (Owner)
+    del_res = client.delete(f"/api/forms/{form_id}", headers=auth_headers)
     assert del_res.status_code == 204
 
     # Confirm deleted
     assert client.get(f"/api/forms/{form_id}").status_code == 404
 
 
-def test_form_submissions_and_validation(client):
-    # Setup form
+def test_form_submissions_and_validation(client, auth_headers):
+    # Setup form (Authenticated creator)
     form_payload = {
         "title": "Contact Us",
         "description": "Customer message form",
@@ -110,7 +124,7 @@ def test_form_submissions_and_validation(client):
             ]
         }
     }
-    create_form_res = client.post("/api/forms", json=form_payload)
+    create_form_res = client.post("/api/forms", json=form_payload, headers=auth_headers)
     assert create_form_res.status_code == 201
     form_id = create_form_res.json()["id"]
 
@@ -137,7 +151,7 @@ def test_form_submissions_and_validation(client):
     )
     assert invalid_num_res.status_code == 400
 
-    # 4. Valid Submission
+    # 4. Valid Submission (Guest can submit to public form)
     valid_sub_res = client.post(
         f"/api/forms/{form_id}/submissions",
         json={"response_json": {"full_name": "John Doe", "email": "john@example.com", "age": "28"}}
@@ -147,8 +161,12 @@ def test_form_submissions_and_validation(client):
     assert sub_data["form_id"] == form_id
     assert sub_data["response_json"]["full_name"] == "John Doe"
 
-    # 5. Retrieve Submissions
-    get_subs_res = client.get(f"/api/forms/{form_id}/submissions")
+    # 5. Anonymous visitor cannot view submission history
+    anon_subs_res = client.get(f"/api/forms/{form_id}/submissions")
+    assert anon_subs_res.status_code == 401
+
+    # 6. Retrieve Submissions (Authenticated form owner)
+    get_subs_res = client.get(f"/api/forms/{form_id}/submissions", headers=auth_headers)
     assert get_subs_res.status_code == 200
     subs = get_subs_res.json()
     assert len(subs) == 1

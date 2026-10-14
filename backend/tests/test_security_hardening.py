@@ -206,7 +206,8 @@ def test_multi_user_draft_no_deletion_collision(client, auth_fixtures):
                     {"name": "email", "label": "Email", "type": "email", "required": True}
                 ]
             }
-        }
+        },
+        headers={"Authorization": f"Bearer {token_alice}"}
     )
     form_id = f_res.json()["id"]
 
@@ -332,3 +333,131 @@ def test_auth_login_rate_limiting(client):
     assert blocked.status_code == 429
     assert "too many" in blocked.json()["detail"].lower()
     clear_login_attempts(email)
+
+
+def test_unowned_shared_template_cannot_be_modified_or_deleted(client, db_session, auth_fixtures):
+    token_alice = auth_fixtures["token_alice"]
+
+    # Create unowned shared system template (user_id is None)
+    template = Form(
+        title="Official Government Form Template",
+        schema_json={
+            "title": "Official Government Form",
+            "fields": [{"name": "citizen_id", "label": "Citizen ID", "type": "text"}]
+        },
+        user_id=None,
+        is_public=True,
+    )
+    db_session.add(template)
+    db_session.commit()
+    db_session.refresh(template)
+
+    # 1. Anonymous visitor cannot update or delete
+    assert client.put(f"/api/forms/{template.id}", json={"title": "Hacked"}).status_code == 401
+    assert client.delete(f"/api/forms/{template.id}").status_code == 401
+
+    # 2. Regular authenticated user cannot update or delete unowned template
+    put_res = client.put(
+        f"/api/forms/{template.id}",
+        json={"title": "Alice Modified Template"},
+        headers={"Authorization": f"Bearer {token_alice}"}
+    )
+    assert put_res.status_code == 403
+    assert "shared system template" in put_res.json()["detail"].lower()
+
+    del_res = client.delete(
+        f"/api/forms/{template.id}",
+        headers={"Authorization": f"Bearer {token_alice}"}
+    )
+    assert del_res.status_code == 403
+    assert "shared system template" in del_res.json()["detail"].lower()
+
+
+def test_submission_history_isolation_on_public_form(client, auth_fixtures):
+    token_alice = auth_fixtures["token_alice"]
+    token_bob = auth_fixtures["token_bob"]
+
+    # Alice creates a public form
+    form_res = client.post(
+        "/api/forms",
+        json={
+            "title": "Community Survey",
+            "is_public": True,
+            "schema_json": {
+                "title": "Community Survey",
+                "fields": [{"name": "feedback", "label": "Feedback", "type": "text", "required": True}]
+            }
+        },
+        headers={"Authorization": f"Bearer {token_alice}"}
+    )
+    form_id = form_res.json()["id"]
+
+    # 1. Alice submits response A
+    client.post(
+        f"/api/forms/{form_id}/submissions",
+        json={"response_json": {"feedback": "Alice personal feedback"}},
+        headers={"Authorization": f"Bearer {token_alice}"}
+    )
+
+    # 2. Bob submits response B
+    client.post(
+        f"/api/forms/{form_id}/submissions",
+        json={"response_json": {"feedback": "Bob confidential submission"}},
+        headers={"Authorization": f"Bearer {token_bob}"}
+    )
+
+    # 3. Anonymous visitor attempts to view submissions -> 401 Unauthorized
+    anon_subs = client.get(f"/api/forms/{form_id}/submissions")
+    assert anon_subs.status_code == 401
+
+    # 4. Bob retrieves submissions -> receives ONLY Bob's submission
+    bob_subs = client.get(f"/api/forms/{form_id}/submissions", headers={"Authorization": f"Bearer {token_bob}"})
+    assert bob_subs.status_code == 200
+    bob_list = bob_subs.json()
+    assert len(bob_list) == 1
+    assert bob_list[0]["response_json"]["feedback"] == "Bob confidential submission"
+
+    # 5. Alice (form owner) retrieves submissions -> receives both submissions
+    alice_subs = client.get(f"/api/forms/{form_id}/submissions", headers={"Authorization": f"Bearer {token_alice}"})
+    assert alice_subs.status_code == 200
+    alice_list = alice_subs.json()
+    assert len(alice_list) == 2
+
+
+def test_upload_magic_bytes_inspection(client):
+    # Spoofed PDF (has .pdf extension but binary content is not PDF)
+    fake_pdf = client.post(
+        "/api/forms/upload-document",
+        files={"file": ("spoofed.pdf", b"This is plain text pretending to be PDF", "application/pdf")}
+    )
+    assert fake_pdf.status_code == 400
+    assert "invalid pdf" in fake_pdf.json()["detail"].lower()
+
+    # Spoofed PNG (has .png extension but invalid magic header)
+    fake_png = client.post(
+        "/api/forms/upload-document",
+        files={"file": ("spoofed.png", b"GIF89a fake image", "image/png")}
+    )
+    assert fake_png.status_code == 400
+    assert "invalid png" in fake_png.json()["detail"].lower()
+
+
+def test_production_demo_user_seeding_rejected():
+    # Production with SEED_DEMO_USER=True must fail fast
+    with pytest.raises(ValueError) as exc:
+        Settings(
+            ENVIRONMENT="production",
+            JWT_SECRET_KEY="c" * 32,
+            SEED_DEMO_USER=True,
+            GROQ_API_KEY="gsk_valid_key",
+        )
+    assert "SEED_DEMO_USER is prohibited in production" in str(exc.value)
+
+    # Production with DEV_FALLBACK_SECRET must fail fast
+    with pytest.raises(ValueError) as exc2:
+        Settings(
+            ENVIRONMENT="production",
+            JWT_SECRET_KEY="voxform-dev-ephemeral-jwt-key-2026-safe-for-local-testing-only-99",
+            GROQ_API_KEY="gsk_valid_key",
+        )
+    assert "Production configuration error" in str(exc2.value)

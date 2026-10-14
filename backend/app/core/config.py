@@ -5,6 +5,8 @@ from typing import List, Union
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+DEV_FALLBACK_SECRET = "voxform-dev-ephemeral-jwt-key-2026-safe-for-local-testing-only-99"
+
 INSECURE_SECRETS = {
     "voxform-secure-production-jwt-secret-key-random-88492",
     "replace_with_a_secure_random_secret_in_production",
@@ -12,9 +14,8 @@ INSECURE_SECRETS = {
     "jwt_secret",
     "changeme",
     "your-secret-key",
+    DEV_FALLBACK_SECRET,
 }
-
-DEV_FALLBACK_SECRET = "voxform-dev-ephemeral-jwt-key-2026-safe-for-local-testing-only-99"
 
 
 class Settings(BaseSettings):
@@ -54,7 +55,7 @@ class Settings(BaseSettings):
     JWT_SECRET_KEY: str = ""
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
-    SEED_DEMO_USER: bool = True  # Automatically set to False in production
+    SEED_DEMO_USER: bool = False  # Disabled by default; prohibited in production
 
     # File Uploads
     UPLOAD_DIR: str = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
@@ -96,7 +97,10 @@ class Settings(BaseSettings):
                     "Production configuration error: A strong, unique JWT_SECRET_KEY "
                     "(at least 32 characters) must be configured in production environment."
                 )
-            self.SEED_DEMO_USER = False
+            if self.SEED_DEMO_USER:
+                raise ValueError(
+                    "Production configuration error: SEED_DEMO_USER is prohibited in production."
+                )
         else:
             if not secret or secret in INSECURE_SECRETS:
                 # Use development fallback secret for local dev/test if not specified in .env
@@ -128,4 +132,3 @@ settings = Settings()
 
 # Ensure uploads directory exists
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
-

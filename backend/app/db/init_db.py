@@ -39,13 +39,20 @@ def init_db():
                 conn.execute(text("ALTER TABLE submissions ADD COLUMN generated_pdf_path VARCHAR(500)"))
                 logger.info("Added generated_pdf_path column to submissions table.")
 
+            # Check drafts columns
+            res = conn.execute(text("PRAGMA table_info(drafts)"))
+            draft_cols = [row[1] for row in res.fetchall()]
+            if "session_id" not in draft_cols:
+                conn.execute(text("ALTER TABLE drafts ADD COLUMN session_id VARCHAR(100)"))
+                logger.info("Added session_id column to drafts table.")
+
             conn.commit()
         except Exception as e:
             logger.warning(f"Column check or migration notice: {e}")
 
     # Seed default user only in non-production environments when explicitly enabled
     from app.core.config import settings
-    if settings.SEED_DEMO_USER:
+    if settings.SEED_DEMO_USER and settings.ENVIRONMENT.lower() != "production":
         db = SessionLocal()
         try:
             default_email = "madan@example.com"

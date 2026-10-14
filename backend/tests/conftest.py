@@ -7,6 +7,8 @@ from fastapi.testclient import TestClient
 from app.db.session import Base, get_db
 from app.main import app
 from app.core.config import settings
+from app.models.user import User
+from app.core.security import get_password_hash, create_access_token
 from sqlalchemy import event
 
 # Configure test environment
@@ -33,7 +35,6 @@ def set_test_sqlite_pragma(dbapi_connection, connection_record):
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
-
 @pytest.fixture(scope="function")
 def db_session():
     Base.metadata.create_all(bind=engine)
@@ -57,3 +58,24 @@ def client(db_session):
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(scope="function")
+def auth_user(db_session):
+    user = User(
+        email="test_owner@example.com",
+        hashed_password=get_password_hash("password123"),
+        full_name="Test Owner",
+        role="User",
+        avatar="TO",
+    )
+    db_session.add(user)
+    db_session.commit()
+    db_session.refresh(user)
+    return user
+
+
+@pytest.fixture(scope="function")
+def auth_headers(auth_user):
+    token = create_access_token(auth_user.id)
+    return {"Authorization": f"Bearer {token}"}

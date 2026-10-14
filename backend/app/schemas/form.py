@@ -140,6 +140,7 @@ class FormCreate(BaseModel):
     description: Optional[str] = None
     schema_json: FormSchemaDefinition
     is_public: Optional[bool] = Field(default=True, description="Whether the form is publicly viewable and fillable")
+    original_document_path: Optional[str] = None
 
 
 class FormUpdate(BaseModel):
@@ -158,6 +159,7 @@ class FormResponse(BaseModel):
     schema_json: FormSchemaDefinition
     user_id: Optional[int] = None
     is_public: bool = True
+    original_document_path: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -194,12 +196,15 @@ class ConversationTurnResponse(BaseModel):
 
 class DraftSaveRequest(BaseModel):
     values_json: Dict[str, Any]
+    session_id: Optional[str] = None
 
 
 class DraftResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     form_id: int
+    user_id: Optional[int] = None
+    session_id: Optional[str] = None
     values_json: Dict[str, Any]
     status: str
     updated_at: datetime

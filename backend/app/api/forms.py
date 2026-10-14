@@ -2,7 +2,7 @@ import os
 import re
 import uuid
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -12,7 +12,8 @@ from app.models.form import Form
 from app.models.submission import Submission
 from app.models.draft import Draft
 from app.models.user import User
-from app.api.deps import get_current_user_optional
+from app.models.uploaded_document import UploadedDocument
+from app.api.deps import get_current_user_optional, get_current_user_required
 from app.schemas.form import (
     FormGenerateRequest,
     FormGenerateResponse,
@@ -32,11 +33,11 @@ from app.schemas.submission import (
     SubmissionCreate,
     SubmissionResponse,
 )
-from app.services.ai_service import generate_form_schema, generate_demo_form_schema
+from app.services.ai_service import generate_form_schema
 from app.services.voice_mapping import map_transcript_to_fields
 from app.services.conversation_service import conversation_manager
-from app.services.pdf_service import extract_pdf_content, generate_completed_pdf, process_document_hybrid
-from app.services.ai_provider import ai_provider, AIProviderError
+from app.services.pdf_service import generate_completed_pdf, process_document_hybrid
+from app.services.ai_provider import AIProviderError
 from app.core.logging import logger
 
 router = APIRouter(prefix="/forms", tags=["Forms"])
@@ -46,7 +47,7 @@ router = APIRouter(prefix="/forms", tags=["Forms"])
 def generate_form(request: FormGenerateRequest):
     """
     Generate a dynamic form schema from a natural-language description.
-    Uses Groq AI (or offline Demo Mode when key is unconfigured).
+    Uses Groq AI (or offline Demo Mode when configured).
     """
     if not request.prompt.strip():
         raise HTTPException(
@@ -76,7 +77,8 @@ async def upload_document(
     filename = file.filename or "uploaded_document.pdf"
     ext = os.path.splitext(filename)[1].lower()
 
-    if ext not in [".pdf", ".png", ".jpg", ".jpeg", ".txt"]:
+    allowed_extensions = {".pdf", ".png", ".jpg", ".jpeg", ".txt"}
+    if ext not in allowed_extensions:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Unsupported file format. Please upload a PDF, PNG, JPG/JPEG, or TXT document."
@@ -95,18 +97,61 @@ async def upload_document(
             detail=f"File exceeds maximum upload size of {settings.MAX_UPLOAD_SIZE_BYTES // (1024*1024)} MB."
         )
 
+    # Content signature & MIME validation (magic bytes inspection)
+    if ext == ".pdf":
+        if not file_bytes.startswith(b"%PDF-"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid PDF file structure. File content does not match a valid PDF document."
+            )
+    elif ext == ".png":
+        if not file_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid PNG file structure. File content does not match a valid PNG image."
+            )
+    elif ext in [".jpg", ".jpeg"]:
+        if not file_bytes.startswith(b"\xff\xd8"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid JPEG file structure. File content does not match a valid JPEG image."
+            )
+    elif ext == ".txt":
+        try:
+            file_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid text document. File content is not valid UTF-8 text."
+            )
+
     # Sanitize filename and enforce safe storage inside UPLOAD_DIR
     safe_base = os.path.basename(filename)
     safe_slug = re.sub(r"[^a-zA-Z0-9_.-]", "_", safe_base)
     unique_name = f"{uuid.uuid4().hex[:12]}_{safe_slug}"
     save_path = os.path.join(settings.UPLOAD_DIR, unique_name)
-    real_upload_dir = os.path.realpath(settings.UPLOAD_DIR)
-    real_save_path = os.path.realpath(save_path)
-    if not (real_save_path.startswith(real_upload_dir) or os.path.dirname(real_save_path) == real_upload_dir):
+    
+    real_upload_dir = os.path.abspath(settings.UPLOAD_DIR)
+    real_save_path = os.path.abspath(save_path)
+    if os.path.commonpath([real_upload_dir, real_save_path]) != real_upload_dir:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid document storage path.")
 
     with open(save_path, "wb") as f_out:
         f_out.write(file_bytes)
+
+    # Record persistent document ownership tracking
+    try:
+        doc_record = UploadedDocument(
+            filename=safe_base,
+            storage_path=unique_name,
+            file_size=len(file_bytes),
+            content_type=file.content_type,
+            user_id=current_user.id if current_user else None,
+        )
+        db.add(doc_record)
+        db.commit()
+    except Exception as db_err:
+        logger.warning(f"Could not record uploaded document in database: {db_err}")
 
     # Process document via hybrid extraction strategy
     try:
@@ -160,22 +205,33 @@ async def upload_document(
 def create_form(
     form_in: FormCreate,
     db: Session = Depends(get_db),
-    current_user: Optional[User] = Depends(get_current_user_optional)
+    current_user: User = Depends(get_current_user_required)
 ):
     """
     Persist a new form and its schema into the SQLite database.
+    Requires authentication. User ID is derived strictly from validated JWT.
     """
+    orig_doc = None
+    if form_in.original_document_path:
+        # Validate that document is contained within UPLOAD_DIR
+        clean_doc = os.path.basename(form_in.original_document_path)
+        candidate_path = os.path.abspath(os.path.join(settings.UPLOAD_DIR, clean_doc))
+        real_upload_dir = os.path.abspath(settings.UPLOAD_DIR)
+        if os.path.commonpath([real_upload_dir, candidate_path]) == real_upload_dir and os.path.exists(candidate_path):
+            orig_doc = candidate_path
+
     new_form = Form(
         title=form_in.title.strip(),
         description=form_in.description.strip() if form_in.description else None,
         schema_json=form_in.schema_json.model_dump(),
-        user_id=current_user.id if current_user else None,
+        user_id=current_user.id,
         is_public=form_in.is_public if form_in.is_public is not None else True,
+        original_document_path=orig_doc,
     )
     db.add(new_form)
     db.commit()
     db.refresh(new_form)
-    logger.info(f"Form created with ID: {new_form.id}")
+    logger.info(f"Form created with ID: {new_form.id} by user {current_user.id}")
     return new_form
 
 
@@ -185,20 +241,20 @@ def list_forms(
     current_user: Optional[User] = Depends(get_current_user_optional)
 ):
     """
-    Retrieve saved forms. Authenticated users see their own forms plus public templates;
-    unauthenticated visitors see only unassigned public forms.
+    Retrieve saved forms. Authenticated users see their own forms plus all public forms;
+    unauthenticated visitors see only explicitly public forms.
     """
     if current_user:
         forms = (
             db.query(Form)
-            .filter((Form.user_id == current_user.id) | (Form.user_id.is_(None)))
+            .filter((Form.user_id == current_user.id) | (Form.is_public == True))
             .order_by(Form.created_at.desc())
             .all()
         )
     else:
         forms = (
             db.query(Form)
-            .filter(Form.user_id.is_(None))
+            .filter(Form.is_public == True)
             .order_by(Form.created_at.desc())
             .all()
         )
@@ -213,7 +269,8 @@ def get_form(
 ):
     """
     Retrieve a specific form by its ID.
-    Enforces privacy: if a form is marked private (is_public=False), only the owner can view it.
+    Enforces privacy: if a form is private (is_public=False), only the owner can view it.
+    Unauthenticated users receive 401; unauthorized users receive 404 to avoid leaking existence.
     """
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
@@ -223,13 +280,13 @@ def get_form(
         )
 
     # Privacy enforcement on private forms
-    if not form.is_public and form.user_id is not None:
+    if not form.is_public:
         if not current_user:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Authentication required to access this private form."
             )
-        if current_user.id != form.user_id:
+        if form.user_id != current_user.id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You do not have permission to access this private form."
@@ -246,7 +303,8 @@ def update_form(
     current_user: Optional[User] = Depends(get_current_user_optional)
 ):
     """
-    Update title, description, or schema of an existing form.
+    Update title, description, schema, or visibility of an existing form.
+    Only the form owner can modify a form. Shared system templates cannot be modified.
     """
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
@@ -255,18 +313,25 @@ def update_form(
             detail=f"Form with ID {form_id} was not found"
         )
 
-    # Enforce ownership if form is assigned to a user
-    if form.user_id is not None:
-        if not current_user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Authentication required to modify this form."
-            )
-        if form.user_id != current_user.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You do not have permission to modify this form."
-            )
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required to modify this form."
+        )
+
+    # Protect unowned shared templates
+    if form.user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Shared system templates cannot be modified."
+        )
+
+    # Enforce ownership
+    if form.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to modify this form."
+        )
 
     if form_in.title is not None:
         form.title = form_in.title.strip()
@@ -279,7 +344,7 @@ def update_form(
 
     db.commit()
     db.refresh(form)
-    logger.info(f"Form {form_id} updated successfully")
+    logger.info(f"Form {form_id} updated successfully by user {current_user.id}")
     return form
 
 
@@ -291,6 +356,7 @@ def delete_form(
 ):
     """
     Delete a form and all associated submissions (cascaded).
+    Only the form owner can delete a form. Shared templates cannot be deleted.
     """
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
@@ -299,22 +365,58 @@ def delete_form(
             detail=f"Form with ID {form_id} was not found"
         )
 
-    if form.user_id is not None:
-        if not current_user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Authentication required to delete this form."
-            )
-        if form.user_id != current_user.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You do not have permission to delete this form."
-            )
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required to delete this form."
+        )
+
+    if form.user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Shared system templates cannot be deleted."
+        )
+
+    if form.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to delete this form."
+        )
 
     db.delete(form)
     db.commit()
-    logger.info(f"Form {form_id} and associated submissions deleted")
+    logger.info(f"Form {form_id} and associated submissions deleted by user {current_user.id}")
     return None
+
+
+@router.get("/{form_id}/original-document")
+def get_original_document(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional)
+):
+    """
+    Download the original source document associated with this form if available.
+    """
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form or not form.original_document_path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Original document not found.")
+
+    if not form.is_public:
+        if not current_user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required.")
+        if form.user_id != current_user.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Original document not found.")
+
+    real_upload_dir = os.path.abspath(settings.UPLOAD_DIR)
+    real_doc_path = os.path.abspath(form.original_document_path)
+    if os.path.commonpath([real_upload_dir, real_doc_path]) != real_upload_dir or not os.path.exists(real_doc_path):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Original document file not found.")
+
+    return FileResponse(
+        path=real_doc_path,
+        filename=os.path.basename(real_doc_path)
+    )
 
 
 @router.post("/{form_id}/conversation", response_model=ConversationTurnResponse)
@@ -336,6 +438,19 @@ def process_conversation_turn(
             detail=f"Form with ID {form_id} was not found"
         )
 
+    # Privacy check
+    if not form.is_public:
+        if not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required to access this private form."
+            )
+        if form.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Form with ID {form_id} was not found"
+            )
+
     session = conversation_manager.get_or_create_session(
         db=db,
         form_id=form_id,
@@ -356,18 +471,41 @@ def process_conversation_turn(
 @router.get("/{form_id}/draft", response_model=Optional[DraftResponse])
 def get_form_draft(
     form_id: int,
+    session_id: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_current_user_optional)
 ):
     """
-    Retrieve server-side saved draft for this form and user.
+    Retrieve server-side saved draft for this form and user/session.
+    Anonymous users only access drafts associated with their specific session_id.
     """
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Form with ID {form_id} was not found"
+        )
+
+    if not form.is_public:
+        if not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required to access this private form."
+            )
+        if form.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Form with ID {form_id} was not found"
+            )
+
     query = db.query(Draft).filter(Draft.form_id == form_id)
     if current_user:
         draft = query.filter(Draft.user_id == current_user.id).first()
     else:
-        # Unauthenticated users can only access anonymous drafts
-        draft = query.filter(Draft.user_id.is_(None)).order_by(Draft.updated_at.desc()).first()
+        if session_id:
+            draft = query.filter(Draft.user_id.is_(None), Draft.session_id == session_id).first()
+        else:
+            draft = query.filter(Draft.user_id.is_(None), Draft.session_id.is_(None)).first()
 
     return draft
 
@@ -381,6 +519,7 @@ def save_form_draft(
 ):
     """
     Server-side debounced autosave draft endpoint.
+    Isolated per authenticated user or guest session.
     """
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
@@ -389,11 +528,26 @@ def save_form_draft(
             detail=f"Form with ID {form_id} was not found"
         )
 
+    if not form.is_public:
+        if not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required to access this private form."
+            )
+        if form.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to access this private form."
+            )
+
     query = db.query(Draft).filter(Draft.form_id == form_id)
     if current_user:
         draft = query.filter(Draft.user_id == current_user.id).first()
     else:
-        draft = query.filter(Draft.user_id.is_(None)).first()
+        if req.session_id:
+            draft = query.filter(Draft.user_id.is_(None), Draft.session_id == req.session_id).first()
+        else:
+            draft = query.filter(Draft.user_id.is_(None), Draft.session_id.is_(None)).first()
 
     if draft:
         draft.values_json = req.values_json
@@ -401,6 +555,7 @@ def save_form_draft(
         draft = Draft(
             form_id=form_id,
             user_id=current_user.id if current_user else None,
+            session_id=req.session_id if not current_user else None,
             values_json=req.values_json,
             status="in_progress",
         )
@@ -414,17 +569,28 @@ def save_form_draft(
 @router.delete("/{form_id}/draft", status_code=status.HTTP_204_NO_CONTENT)
 def delete_form_draft(
     form_id: int,
+    session_id: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_current_user_optional)
 ):
     """
     Clear draft once form is submitted or discarded.
     """
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Form with ID {form_id} was not found"
+        )
+
     query = db.query(Draft).filter(Draft.form_id == form_id)
     if current_user:
         drafts = query.filter(Draft.user_id == current_user.id).all()
     else:
-        drafts = query.filter(Draft.user_id.is_(None)).all()
+        if session_id:
+            drafts = query.filter(Draft.user_id.is_(None), Draft.session_id == session_id).all()
+        else:
+            drafts = query.filter(Draft.user_id.is_(None), Draft.session_id.is_(None)).all()
 
     for d in drafts:
         db.delete(d)
@@ -448,6 +614,18 @@ def create_submission(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Form with ID {form_id} was not found"
         )
+
+    if not form.is_public:
+        if not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required to submit to this private form."
+            )
+        if form.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Form with ID {form_id} was not found"
+            )
 
     schema = form.schema_json
     fields = schema.get("fields", [])
@@ -497,7 +675,7 @@ def create_submission(
     db.commit()
     db.refresh(new_sub)
 
-    # Automatically generate completed PDF document in background
+    # Automatically generate completed PDF document in background (failsafe)
     try:
         pdf_path = generate_completed_pdf(
             form_title=form.title,
@@ -518,7 +696,7 @@ def create_submission(
         if current_user:
             user_drafts = draft_query.filter(Draft.user_id == current_user.id).all()
         else:
-            user_drafts = draft_query.filter(Draft.user_id.is_(None)).all()
+            user_drafts = []
         for d in user_drafts:
             db.delete(d)
         db.commit()
@@ -536,8 +714,11 @@ def get_form_submissions(
     current_user: Optional[User] = Depends(get_current_user_optional)
 ):
     """
-    Retrieve all submissions for a specific form.
-    Only form creator or submission authors can view submissions on user-owned forms.
+    Retrieve submissions for a specific form.
+    - Requires authentication.
+    - Form creator sees all submissions for their form.
+    - Other authenticated users see only their own submissions.
+    - Anonymous visitors cannot access submission histories.
     """
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
@@ -546,26 +727,33 @@ def get_form_submissions(
             detail=f"Form with ID {form_id} was not found"
         )
 
-    # If the form is owned by a specific user:
-    if form.user_id is not None:
-        if not current_user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Authentication required to view this form's submissions."
-            )
-        if current_user.id != form.user_id:
-            # Other authenticated users only see their own submissions
-            submissions = (
-                db.query(Submission)
-                .filter(Submission.form_id == form_id, Submission.user_id == current_user.id)
-                .order_by(Submission.created_at.desc())
-                .all()
-            )
-            return submissions
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required to view submission history."
+        )
 
+    # Privacy check
+    if not form.is_public and form.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Form with ID {form_id} was not found"
+        )
+
+    # If the current user is the owner of the form, return all submissions
+    if form.user_id is not None and current_user.id == form.user_id:
+        submissions = (
+            db.query(Submission)
+            .filter(Submission.form_id == form_id)
+            .order_by(Submission.created_at.desc())
+            .all()
+        )
+        return submissions
+
+    # Otherwise, return only the current user's submissions
     submissions = (
         db.query(Submission)
-        .filter(Submission.form_id == form_id)
+        .filter(Submission.form_id == form_id, Submission.user_id == current_user.id)
         .order_by(Submission.created_at.desc())
         .all()
     )
@@ -581,7 +769,15 @@ def download_submission_pdf(
 ):
     """
     Download publication-ready completed PDF for this submission.
+    Requires authentication. Access is permitted only to the submission author or form owner.
     """
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Form with ID {form_id} was not found"
+        )
+
     submission = db.query(Submission).filter(Submission.id == sub_id, Submission.form_id == form_id).first()
     if not submission:
         raise HTTPException(
@@ -589,46 +785,58 @@ def download_submission_pdf(
             detail=f"Submission {sub_id} not found"
         )
 
-    form = db.query(Form).filter(Form.id == form_id).first()
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required to download this submission PDF."
+        )
 
-    # Enforce authorization if form or submission is tied to a user
-    if (form and form.user_id is not None) or (submission.user_id is not None):
-        if not current_user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Authentication required to download this submission PDF."
-            )
-        is_owner = form and (current_user.id == form.user_id)
-        is_author = (submission.user_id is not None) and (current_user.id == submission.user_id)
-        if not is_owner and not is_author:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You do not have permission to download this submission PDF."
-            )
+    is_owner = (form.user_id is not None) and (current_user.id == form.user_id)
+    is_author = (submission.user_id is not None) and (current_user.id == submission.user_id)
+    if not is_owner and not is_author:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to download this submission PDF."
+        )
 
     pdf_path = submission.generated_pdf_path
 
     if not pdf_path or not os.path.exists(pdf_path):
         pdf_path = generate_completed_pdf(
-            form_title=form.title if form else "Form Submission",
-            form_description=form.description if form else None,
-            fields_schema=form.schema_json.get("fields", []) if form else [],
+            form_title=form.title,
+            form_description=form.description,
+            fields_schema=form.schema_json.get("fields", []),
             response_data=submission.response_json,
             submission_id=submission.id,
+            original_pdf_path=form.original_document_path,
         )
         submission.generated_pdf_path = pdf_path
         db.commit()
 
-    safe_title = re.sub(r"[^a-zA-Z0-9_-]", "_", form.title if form else "submission")
+    # Enforce path containment
+    real_upload_dir = os.path.abspath(settings.UPLOAD_DIR)
+    real_pdf_path = os.path.abspath(pdf_path)
+    if os.path.commonpath([real_upload_dir, real_pdf_path]) != real_upload_dir or not os.path.exists(real_pdf_path):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid submission PDF path."
+        )
+
+    safe_title = re.sub(r"[^a-zA-Z0-9_-]", "_", form.title)
     return FileResponse(
-        path=pdf_path,
+        path=real_pdf_path,
         media_type="application/pdf",
         filename=f"{safe_title}_submission_{sub_id}.pdf"
     )
 
 
 @router.post("/{form_id}/voice-map", response_model=VoiceMapResponse)
-def voice_map_fields(form_id: int, req: VoiceMapRequest, db: Session = Depends(get_db)):
+def voice_map_fields(
+    form_id: int,
+    req: VoiceMapRequest,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional)
+):
     """
     Deterministic rule-based slot-filling voice mapping.
     """
@@ -638,6 +846,18 @@ def voice_map_fields(form_id: int, req: VoiceMapRequest, db: Session = Depends(g
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Form with ID {form_id} was not found"
         )
+
+    if not form.is_public:
+        if not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required to access this private form."
+            )
+        if form.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Form with ID {form_id} was not found"
+            )
 
     schema = form.schema_json
     mapped = map_transcript_to_fields(req.transcript, schema)
