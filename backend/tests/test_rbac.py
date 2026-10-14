@@ -349,3 +349,69 @@ def test_14_password_hashes_and_secrets_never_appear_in_api(client, rbac_users):
     for log_item in audit_res.json()["items"]:
         if log_item.get("details"):
             assert "password" not in log_item["details"].lower() or "[redacted]" in log_item["details"].lower()
+
+
+def test_15_admin_stats_access_and_metrics(client, rbac_users):
+    """15. GET /api/admin/stats requires Admin privileges and returns accurate aggregated metrics."""
+    token_user = rbac_users["token_user"]
+    token_admin = rbac_users["token_admin"]
+
+    # 1. Unauthenticated request -> 401
+    res_unauth = client.get("/api/admin/stats")
+    assert res_unauth.status_code == 401
+
+    # 2. Regular user request -> 403 Forbidden
+    res_user = client.get("/api/admin/stats", headers={"Authorization": f"Bearer {token_user}"})
+    assert res_user.status_code == 403
+
+    # 3. Admin request -> 200 OK
+    res_admin = client.get("/api/admin/stats", headers={"Authorization": f"Bearer {token_admin}"})
+    assert res_admin.status_code == 200
+    data = res_admin.json()
+    assert "total_users" in data
+    assert "active_users" in data
+    assert "suspended_users" in data
+    assert "users_by_role" in data
+    assert data["total_users"] >= 4
+    assert data["active_users"] >= 4
+    assert data["suspended_users"] >= 0
+    assert "USER" in data["users_by_role"]
+    assert "ADMIN" in data["users_by_role"]
+    assert "SUPER_ADMIN" in data["users_by_role"]
+
+
+def test_16_admin_users_status_filter(client, rbac_users, db_session):
+    """16. GET /api/admin/users supports status filtering for 'active' and 'suspended' users."""
+    token_admin = rbac_users["token_admin"]
+    user_to_suspend = rbac_users["user"]
+
+    # Suspend user
+    suspend_res = client.put(
+        f"/api/admin/users/{user_to_suspend.id}/status",
+        json={"is_active": False},
+        headers={"Authorization": f"Bearer {token_admin}"}
+    )
+    assert suspend_res.status_code == 200
+
+    # Filter status=suspended
+    res_suspended = client.get("/api/admin/users?status=suspended", headers={"Authorization": f"Bearer {token_admin}"})
+    assert res_suspended.status_code == 200
+    items_suspended = res_suspended.json()["items"]
+    assert any(u["id"] == user_to_suspend.id for u in items_suspended)
+    assert all(u["is_active"] is False for u in items_suspended)
+
+    # Filter status=active
+    res_active = client.get("/api/admin/users?status=active", headers={"Authorization": f"Bearer {token_admin}"})
+    assert res_active.status_code == 200
+    items_active = res_active.json()["items"]
+    assert not any(u["id"] == user_to_suspend.id for u in items_active)
+    assert all(u["is_active"] is True for u in items_active)
+
+    # Reactivate user to restore state
+    reactivate_res = client.put(
+        f"/api/admin/users/{user_to_suspend.id}/status",
+        json={"is_active": True},
+        headers={"Authorization": f"Bearer {token_admin}"}
+    )
+    assert reactivate_res.status_code == 200
+

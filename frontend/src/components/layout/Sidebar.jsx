@@ -8,12 +8,13 @@ import {
   LogOut,
   Sparkles,
   ChevronRight,
+  ShieldCheck,
   X,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 
 export default function Sidebar({ currentView, setView, isMobileOpen, setIsMobileOpen }) {
-  const { user, logout } = useAuth();
+  const { user, logout, isAdmin } = useAuth();
 
   const navItems = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -21,6 +22,7 @@ export default function Sidebar({ currentView, setView, isMobileOpen, setIsMobil
     { id: "create", label: "Create Form", icon: PlusCircle },
     { id: "history", label: "History", icon: History },
     { id: "settings", label: "Settings", icon: Settings },
+    ...(isAdmin ? [{ id: "admin", label: "Admin Console", icon: ShieldCheck }] : []),
   ];
 
   const handleNavClick = (viewName) => {
@@ -115,6 +117,11 @@ export default function Sidebar({ currentView, setView, isMobileOpen, setIsMobil
               <p className="text-[11px] text-neutral-500 truncate font-mono">
                 {user?.email || "madan@example.com"}
               </p>
+              {user?.role && (
+                <span className="inline-block mt-0.5 px-1.5 py-0.2 rounded text-[9px] font-mono font-medium uppercase tracking-wider bg-neutral-800 text-neutral-300 border border-neutral-700/60">
+                  {user.role}
+                </span>
+              )}
             </div>
           </div>
         </div>

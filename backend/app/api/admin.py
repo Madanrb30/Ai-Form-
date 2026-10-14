@@ -7,6 +7,7 @@ from app.db.session import get_db
 from app.models.user import User, UserRole
 from app.models.audit_log import AuditLog
 from app.schemas.admin import (
+    AdminStatsResponse,
     UserAdminResponse,
     UserListResponse,
     UserStatusUpdateRequest,
@@ -21,11 +22,42 @@ from app.core.logging import logger
 router = APIRouter(prefix="/admin", tags=["Administration"])
 
 
+@router.get("/stats", response_model=AdminStatsResponse)
+def get_admin_stats(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin),
+):
+    """
+    Retrieve real aggregate user and administrative activity statistics.
+    Accessible to ADMIN and SUPER_ADMIN roles.
+    Never exposes sensitive individual user records or passwords.
+    """
+    total_users = db.query(User).count()
+    active_users = db.query(User).filter(User.is_active == True).count()
+    suspended_users = db.query(User).filter(User.is_active == False).count()
+    total_audit_logs = db.query(AuditLog).count()
+
+    users_by_role = {
+        "USER": db.query(User).filter(User.role == "USER").count(),
+        "ADMIN": db.query(User).filter(User.role == "ADMIN").count(),
+        "SUPER_ADMIN": db.query(User).filter(User.role == "SUPER_ADMIN").count(),
+    }
+
+    return AdminStatsResponse(
+        total_users=total_users,
+        active_users=active_users,
+        suspended_users=suspended_users,
+        total_audit_logs=total_audit_logs,
+        users_by_role=users_by_role,
+    )
+
+
 @router.get("/users", response_model=UserListResponse)
 def list_users(
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(20, ge=1, le=100, description="Items per page (max 100)"),
     role: Optional[str] = Query(None, description="Filter by role (USER, ADMIN, SUPER_ADMIN)"),
+    status: Optional[str] = Query(None, description="Filter by status: 'active', 'suspended', or 'all'"),
     search: Optional[str] = Query(None, description="Search by email or name"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin),
@@ -39,7 +71,15 @@ def list_users(
 
     if role:
         role_clean = role.strip().upper()
-        query = query.filter(User.role == role_clean)
+        if role_clean != "ALL":
+            query = query.filter(User.role == role_clean)
+
+    if status:
+        status_clean = status.strip().lower()
+        if status_clean == "active":
+            query = query.filter(User.is_active == True)
+        elif status_clean == "suspended":
+            query = query.filter(User.is_active == False)
 
     if search:
         search_pattern = f"%{search.strip().lower()}%"

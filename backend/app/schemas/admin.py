@@ -1,7 +1,15 @@
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict
 from pydantic import BaseModel, ConfigDict, Field
 from app.models.user import UserRole
+
+
+class AdminStatsResponse(BaseModel):
+    total_users: int
+    active_users: int
+    suspended_users: int
+    total_audit_logs: int
+    users_by_role: Dict[str, int]
 
 
 class UserAdminResponse(BaseModel):

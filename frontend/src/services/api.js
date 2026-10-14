@@ -216,12 +216,18 @@ export const api = {
   },
 
   // Administration & RBAC APIs
+  getAdminStats: () => request("/admin/stats"),
   getAdminUsers: (params = {}) => {
     const q = new URLSearchParams(params).toString();
     return request(`/admin/users${q ? `?${q}` : ""}`);
   },
   getAdminUser: (userId) => request(`/admin/users/${userId}`),
   updateUserStatus: (userId, isActive, reason = null) =>
+    request(`/admin/users/${userId}/status`, {
+      method: "PUT",
+      body: JSON.stringify({ is_active: isActive, reason }),
+    }),
+  updateAdminUserStatus: (userId, isActive, reason = null) =>
     request(`/admin/users/${userId}/status`, {
       method: "PUT",
       body: JSON.stringify({ is_active: isActive, reason }),

@@ -11,6 +11,7 @@ import ReviewFormPage from "./pages/ReviewFormPage";
 import HistoryPage from "./pages/HistoryPage";
 import SettingsPage from "./pages/SettingsPage";
 import SubmissionsPage from "./pages/SubmissionsPage";
+import AdminDashboardPage from "./pages/AdminDashboardPage";
 
 function MainApp() {
   const { isAuthenticated } = useAuth();
@@ -82,6 +83,10 @@ function MainApp() {
           formTitle={currentView.formTitle}
           setView={setView}
         />
+      )}
+
+      {currentView.name === "admin" && (
+        <AdminDashboardPage setView={setView} />
       )}
     </AppLayout>
   );
