@@ -461,3 +461,185 @@ def test_production_demo_user_seeding_rejected():
             GROQ_API_KEY="gsk_valid_key",
         )
     assert "Production configuration error" in str(exc2.value)
+
+
+def test_anonymous_cannot_create_persistent_form(client):
+    """Anonymous visitors must be prohibited from creating persistent forms."""
+    res = client.post(
+        "/api/forms",
+        json={
+            "title": "Unauthorized Form",
+            "schema_json": {
+                "title": "Unauthorized Form",
+                "fields": [{"name": "test", "label": "Test", "type": "text"}]
+            }
+        }
+    )
+    assert res.status_code == 401
+    assert "authentication" in res.json()["detail"].lower() and "required" in res.json()["detail"].lower()
+
+
+def test_document_access_ownership_and_path_traversal(client, auth_fixtures, tmp_path):
+    """Ensure document access is bound to form ownership and safe from traversal."""
+    token_alice = auth_fixtures["token_alice"]
+    token_bob = auth_fixtures["token_bob"]
+
+    import os
+    from app.core.config import settings
+
+    # 1. Create a dummy original document in the upload directory
+    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+    sample_doc_name = "alice_contract_doc.pdf"
+    sample_doc_path = os.path.join(settings.UPLOAD_DIR, sample_doc_name)
+    with open(sample_doc_path, "wb") as f:
+        f.write(b"%PDF-1.4 sample secure document content")
+
+    try:
+        # Alice creates a private form referencing this document
+        create_res = client.post(
+            "/api/forms",
+            json={
+                "title": "Alice Confidential Document Form",
+                "is_public": False,
+                "original_document_path": sample_doc_name,
+                "schema_json": {
+                    "title": "Alice Doc Form",
+                    "fields": [{"name": "signee", "label": "Signee", "type": "text"}]
+                }
+            },
+            headers={"Authorization": f"Bearer {token_alice}"}
+        )
+        assert create_res.status_code == 201
+        form_id = create_res.json()["id"]
+
+        # Anonymous cannot download original document -> 401
+        anon_doc = client.get(f"/api/forms/{form_id}/original-document")
+        assert anon_doc.status_code == 401
+
+        # Bob (non-owner) cannot download original document -> 404 (private form hidden)
+        bob_doc = client.get(
+            f"/api/forms/{form_id}/original-document",
+            headers={"Authorization": f"Bearer {token_bob}"}
+        )
+        assert bob_doc.status_code in (403, 404)
+
+        # Alice (owner) downloads original document -> 200
+        alice_doc = client.get(
+            f"/api/forms/{form_id}/original-document",
+            headers={"Authorization": f"Bearer {token_alice}"}
+        )
+        assert alice_doc.status_code == 200
+        assert alice_doc.content.startswith(b"%PDF-1.4")
+
+        # 2. Path traversal attack attempt during form creation
+        traversal_res = client.post(
+            "/api/forms",
+            json={
+                "title": "Traversal Form Attempt",
+                "original_document_path": "../../../etc/passwd",
+                "schema_json": {
+                    "title": "Traversal",
+                    "fields": [{"name": "x", "label": "X", "type": "text"}]
+                }
+            },
+            headers={"Authorization": f"Bearer {token_alice}"}
+        )
+        assert traversal_res.status_code == 201
+        # The stored path must NOT traverse outside upload dir (cleaned via basename & existence check)
+        stored_path = traversal_res.json()["original_document_path"]
+        assert stored_path is None or not (".." in stored_path)
+
+    finally:
+        if os.path.exists(sample_doc_path):
+            os.remove(sample_doc_path)
+
+
+def test_guest_workflow_on_published_public_form(client, auth_fixtures):
+    """Ensure guests can fill published public forms but cannot read others' submissions."""
+    token_alice = auth_fixtures["token_alice"]
+
+    # Alice publishes a public form
+    create_res = client.post(
+        "/api/forms",
+        json={
+            "title": "Public Event RSVP",
+            "is_public": True,
+            "schema_json": {
+                "title": "Public Event RSVP",
+                "fields": [
+                    {"name": "guest_name", "label": "Full Name", "type": "text", "required": True},
+                    {"name": "email", "label": "Email", "type": "email", "required": True}
+                ]
+            }
+        },
+        headers={"Authorization": f"Bearer {token_alice}"}
+    )
+    assert create_res.status_code == 201
+    form_id = create_res.json()["id"]
+
+    # 1. Guest views public form schema -> 200 OK
+    guest_view = client.get(f"/api/forms/{form_id}")
+    assert guest_view.status_code == 200
+    assert guest_view.json()["title"] == "Public Event RSVP"
+
+    # 2. Guest starts conversation turn -> 200 OK, receives session_id
+    turn_res = client.post(
+        f"/api/forms/{form_id}/conversation",
+        json={"transcript": "My name is Charlie Guest and my email is charlie@example.com", "current_values": {}}
+    )
+    assert turn_res.status_code == 200
+    session_id = turn_res.json()["session_id"]
+    assert session_id is not None
+
+    # 3. Guest saves draft bound to session_id
+    save_draft = client.post(
+        f"/api/forms/{form_id}/draft",
+        json={
+            "session_id": session_id,
+            "values_json": {"guest_name": "Charlie Guest"}
+        }
+    )
+    assert save_draft.status_code == 200
+
+    # 4. Guest retrieves draft using session_id -> 200 OK
+    get_draft = client.get(f"/api/forms/{form_id}/draft?session_id={session_id}")
+    assert get_draft.status_code == 200
+    assert get_draft.json() is not None
+    assert get_draft.json()["values_json"]["guest_name"] == "Charlie Guest"
+
+    # 5. Different session_id cannot access Charlie's draft
+    other_draft = client.get(f"/api/forms/{form_id}/draft?session_id=different-guest-session")
+    assert other_draft.status_code == 200
+    assert other_draft.json() is None
+
+    # 6. Guest submits the form -> 201 Created
+    submit_res = client.post(
+        f"/api/forms/{form_id}/submissions",
+        json={"response_json": {"guest_name": "Charlie Guest", "email": "charlie@example.com"}}
+    )
+    assert submit_res.status_code == 201
+    sub_id = submit_res.json()["id"]
+
+    # 7. Guest cannot access submission history -> 401 Unauthorized
+    anon_history = client.get(f"/api/forms/{form_id}/submissions")
+    assert anon_history.status_code == 401
+
+    # 8. Guest cannot download submission PDF -> 401 Unauthorized
+    anon_pdf = client.get(f"/api/forms/{form_id}/submissions/{sub_id}/pdf")
+    assert anon_pdf.status_code == 401
+
+    # 9. Form owner (Alice) CAN access submission history and PDF -> 200 OK
+    alice_history = client.get(
+        f"/api/forms/{form_id}/submissions",
+        headers={"Authorization": f"Bearer {token_alice}"}
+    )
+    assert alice_history.status_code == 200
+    assert any(s["id"] == sub_id for s in alice_history.json())
+
+    alice_pdf = client.get(
+        f"/api/forms/{form_id}/submissions/{sub_id}/pdf",
+        headers={"Authorization": f"Bearer {token_alice}"}
+    )
+    assert alice_pdf.status_code == 200
+    assert alice_pdf.content.startswith(b"%PDF")
+

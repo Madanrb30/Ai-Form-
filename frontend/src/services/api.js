@@ -201,11 +201,17 @@ export const api = {
     }),
 
   // Server-side Autosave Drafts
-  getDraft: (formId) => request(`/forms/${formId}/draft`),
-  saveDraft: (formId, valuesJson) =>
+  getDraft: (formId, sessionId = null) => {
+    const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+    return request(`/forms/${formId}/draft${query}`);
+  },
+  saveDraft: (formId, valuesJson, sessionId = null) =>
     request(`/forms/${formId}/draft`, {
       method: "POST",
-      body: JSON.stringify({ values_json: valuesJson }),
+      body: JSON.stringify({ values_json: valuesJson, session_id: sessionId || null }),
     }),
-  deleteDraft: (formId) => request(`/forms/${formId}/draft`, { method: "DELETE" }),
+  deleteDraft: (formId, sessionId = null) => {
+    const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+    return request(`/forms/${formId}/draft${query}`, { method: "DELETE" });
+  },
 };

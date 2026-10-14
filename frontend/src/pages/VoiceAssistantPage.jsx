@@ -206,7 +206,8 @@ export default function VoiceAssistantPage({ formId, setView }) {
         });
 
         // Autosave draft server-side and locally
-        api.saveDraft(formId, updated).catch(() => {});
+        const activeSessionId = turnRes.session_id || sessionId;
+        api.saveDraft(formId, updated, activeSessionId).catch(() => {});
         storageService.saveDraft(formId, updated, form?.title || "Form Draft");
 
         const assistantReply = turnRes.assistant_response || "Information updated.";
@@ -275,7 +276,7 @@ export default function VoiceAssistantPage({ formId, setView }) {
   const handleSaveDraft = async () => {
     storageService.saveDraft(formId, values, form?.title || "Form Draft");
     try {
-      await api.saveDraft(formId, values);
+      await api.saveDraft(formId, values, sessionId);
       toast("Draft progress saved to cloud database and local storage.", "success");
     } catch {
       toast("Draft progress saved to local storage.", "info");
