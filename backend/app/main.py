@@ -23,7 +23,10 @@ app = FastAPI(
     description="Backend API for AI Voice-Assisted Dynamic Form Builder",
     version="1.0.0",
     lifespan=lifespan,
+    docs_url="/docs" if settings.ENVIRONMENT != "production" else None,
+    redoc_url="/redoc" if settings.ENVIRONMENT != "production" else None,
 )
+
 
 # CORS configuration
 app.add_middleware(

@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000/api";
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8090/api";
 
 class ApiError extends Error {
   constructor(message, status = 0, details = null) {
@@ -144,8 +144,32 @@ export const api = {
       body: JSON.stringify({ response_json: responseJson }),
     }),
   getSubmissions: (formId) => request(`/forms/${formId}/submissions`),
-  getSubmissionPdfUrl: (formId, subId) =>
-    `${API_BASE}/forms/${formId}/submissions/${subId}/pdf`,
+  getSubmissionPdfUrl: (formId, subId) => {
+    const token = getStoredToken();
+    const query = token ? `?token=${encodeURIComponent(token)}` : "";
+    return `${API_BASE}/forms/${formId}/submissions/${subId}/pdf${query}`;
+  },
+  downloadSubmissionPdf: async (formId, subId, filename = null) => {
+    const url = `${API_BASE}/forms/${formId}/submissions/${subId}/pdf`;
+    const token = getStoredToken();
+    const headers = {};
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+    const res = await fetch(url, { headers });
+    if (!res.ok) {
+      throw new ApiError(`Failed to download PDF (${res.status})`, res.status);
+    }
+    const blob = await res.blob();
+    const blobUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = blobUrl;
+    link.download = filename || `submission_${subId}.pdf`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(blobUrl);
+  },
 
   // Cloud Speech-to-Text Transcription via Groq Whisper-large-v3-turbo
   transcribeAudio: (audioBlob, { filename = "recording.webm", language = null } = {}) => {

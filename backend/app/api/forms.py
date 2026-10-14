@@ -95,9 +95,16 @@ async def upload_document(
             detail=f"File exceeds maximum upload size of {settings.MAX_UPLOAD_SIZE_BYTES // (1024*1024)} MB."
         )
 
-    # Save to disk
-    unique_name = f"{uuid.uuid4().hex[:12]}_{filename}"
+    # Sanitize filename and enforce safe storage inside UPLOAD_DIR
+    safe_base = os.path.basename(filename)
+    safe_slug = re.sub(r"[^a-zA-Z0-9_.-]", "_", safe_base)
+    unique_name = f"{uuid.uuid4().hex[:12]}_{safe_slug}"
     save_path = os.path.join(settings.UPLOAD_DIR, unique_name)
+    real_upload_dir = os.path.realpath(settings.UPLOAD_DIR)
+    real_save_path = os.path.realpath(save_path)
+    if not (real_save_path.startswith(real_upload_dir) or os.path.dirname(real_save_path) == real_upload_dir):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid document storage path.")
+
     with open(save_path, "wb") as f_out:
         f_out.write(file_bytes)
 
@@ -105,26 +112,41 @@ async def upload_document(
     try:
         schema_data, strategy, msg, pages_proc, uncertain_count = process_document_hybrid(
             file_bytes=file_bytes,
-            filename=filename,
+            filename=safe_slug,
             ext=ext
         )
     except AIProviderError as e:
+        if os.path.exists(save_path):
+            try:
+                os.remove(save_path)
+            except Exception:
+                pass
         logger.error(f"AI provider error during document extraction: {e.message}")
         raise HTTPException(status_code=e.status_code, detail=e.message)
     except ValueError as e:
+        if os.path.exists(save_path):
+            try:
+                os.remove(save_path)
+            except Exception:
+                pass
         logger.warning(f"Validation error in document processing: {e}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
-        logger.error(f"Unexpected document extraction failure: {e}")
+        if os.path.exists(save_path):
+            try:
+                os.remove(save_path)
+            except Exception:
+                pass
+        logger.error(f"Unexpected document extraction failure: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Document extraction failed: {str(e)}"
+            detail="Document extraction failed due to an unexpected internal error. Please try again."
         )
 
     return DocumentExtractResponse(
         schema_data=schema_data,
-        filename=filename,
-        file_path=save_path,
+        filename=safe_base,
+        file_path=unique_name,
         detected_fields_count=len(schema_data.fields),
         has_acroform=(strategy == "acroform"),
         message=msg,
@@ -148,6 +170,7 @@ def create_form(
         description=form_in.description.strip() if form_in.description else None,
         schema_json=form_in.schema_json.model_dump(),
         user_id=current_user.id if current_user else None,
+        is_public=form_in.is_public if form_in.is_public is not None else True,
     )
     db.add(new_form)
     db.commit()
@@ -162,16 +185,35 @@ def list_forms(
     current_user: Optional[User] = Depends(get_current_user_optional)
 ):
     """
-    Retrieve all saved forms sorted by newest first.
+    Retrieve saved forms. Authenticated users see their own forms plus public templates;
+    unauthenticated visitors see only unassigned public forms.
     """
-    forms = db.query(Form).order_by(Form.created_at.desc()).all()
+    if current_user:
+        forms = (
+            db.query(Form)
+            .filter((Form.user_id == current_user.id) | (Form.user_id.is_(None)))
+            .order_by(Form.created_at.desc())
+            .all()
+        )
+    else:
+        forms = (
+            db.query(Form)
+            .filter(Form.user_id.is_(None))
+            .order_by(Form.created_at.desc())
+            .all()
+        )
     return forms
 
 
 @router.get("/{form_id}", response_model=FormResponse)
-def get_form(form_id: int, db: Session = Depends(get_db)):
+def get_form(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional)
+):
     """
     Retrieve a specific form by its ID.
+    Enforces privacy: if a form is marked private (is_public=False), only the owner can view it.
     """
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
@@ -179,6 +221,20 @@ def get_form(form_id: int, db: Session = Depends(get_db)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Form with ID {form_id} was not found"
         )
+
+    # Privacy enforcement on private forms
+    if not form.is_public and form.user_id is not None:
+        if not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required to access this private form."
+            )
+        if current_user.id != form.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to access this private form."
+            )
+
     return form
 
 
@@ -218,6 +274,8 @@ def update_form(
         form.description = form_in.description.strip()
     if form_in.schema_json is not None:
         form.schema_json = form_in.schema_json.model_dump()
+    if form_in.is_public is not None:
+        form.is_public = form_in.is_public
 
     db.commit()
     db.refresh(form)
@@ -454,14 +512,18 @@ def create_submission(
     except Exception as e:
         logger.warning(f"Could not generate PDF for submission {new_sub.id}: {e}")
 
-    # Remove draft upon successful submission
+    # Remove only the submitting user's draft upon successful submission
     try:
-        drafts = db.query(Draft).filter(Draft.form_id == form_id).all()
-        for d in drafts:
+        draft_query = db.query(Draft).filter(Draft.form_id == form_id)
+        if current_user:
+            user_drafts = draft_query.filter(Draft.user_id == current_user.id).all()
+        else:
+            user_drafts = draft_query.filter(Draft.user_id.is_(None)).all()
+        for d in user_drafts:
             db.delete(d)
         db.commit()
-    except Exception:
-        pass
+    except Exception as draft_err:
+        logger.warning(f"Could not clear draft after submission: {draft_err}")
 
     logger.info(f"Submission {new_sub.id} created for form {form_id}")
     return new_sub
@@ -531,8 +593,13 @@ def download_submission_pdf(
 
     # Enforce authorization if form or submission is tied to a user
     if (form and form.user_id is not None) or (submission.user_id is not None):
-        is_owner = current_user and form and (current_user.id == form.user_id)
-        is_author = current_user and (submission.user_id is not None) and (current_user.id == submission.user_id)
+        if not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required to download this submission PDF."
+            )
+        is_owner = form and (current_user.id == form.user_id)
+        is_author = (submission.user_id is not None) and (current_user.id == submission.user_id)
         if not is_owner and not is_author:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

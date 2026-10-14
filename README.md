@@ -1,34 +1,39 @@
-# VoxForm — AI Voice-Assisted Dynamic Form Builder
+# VoxForm — AI Voice-Assisted Dynamic Form Assistant
 
-A modern, full-stack web application that allows users to generate dynamic web forms using natural-language instructions and fill them manually or through voice assistance.
+VoxForm is an enterprise-hardened, full-stack application designed to generate, fill, and process dynamic web forms using natural-language instructions, voice dialogue, and document extraction.
 
-Built with a monochrome black-and-white aesthetic, strict schema validation, offline Demo Mode fallback, and persistent SQLite storage.
+Built with a monochrome black-and-white minimalist aesthetic, strict schema validation, Groq cloud AI integration, hybrid document ingestion (digital PDFs, interactive AcroForms, and Vision OCR), audio speech-to-text, and secure SQLite persistence.
 
 ---
 
-## Architecture Overview
+## System Architecture
 
 ```
                           ┌─────────────────────────────┐
                           │   React 19 + Vite Frontend  │
                           │   - Dynamic Form Renderer   │
-                          │   - Web Speech Assistant    │
-                          │   - Tailwind CSS v4 (B&W)   │
+                          │   - Web Speech & Cloud Mic  │
+                          │   - Monochrome Minimalist UI│
+                          │   - Draft Autosave & Sync   │
                           └──────────────┬──────────────┘
-                                         │ REST API
+                                         │ REST API (Bearer JWT / Query Token)
                                          ▼
                           ┌─────────────────────────────┐
                           │       FastAPI Backend       │
-                          │   - Pydantic v2 Schemas     │
-                          │   - AI Generation Service   │
-                          │   - Voice Slot Extraction   │
+                          │   - Strict Pydantic v2      │
+                          │   - Access Control & Auth   │
+                          │   - Rate-Limited Endpoints  │
+                          │   - Hybrid Doc Extractor    │
+                          │   - ReportLab PDF Engine    │
                           └──────┬───────────────┬──────┘
                                  │               │
-                     (If configured)             │ SQLAlchemy 2.0
+                     Live Cloud  │               │ SQLite with PRAGMA Foreign Keys
                                  ▼               ▼
                       ┌────────────────────┐  ┌─────────────────────┐
-                      │ Google Gemini API  │  │ SQLite Database     │
-                      │ (or Demo Mode)     │  │ (forms & submissions│
+                      │   Groq Cloud API   │  │   SQLite Database   │
+                      │  - Qwen 3.8-27b    │  │  - Users & Forms    │
+                      │  - Whisper Turbo   │  │  - Submissions      │
+                      │  - (or Demo Mode)  │  │  - Drafts & Sessions │
                       └────────────────────┘  └─────────────────────┘
 ```
 
@@ -41,40 +46,67 @@ Built with a monochrome black-and-white aesthetic, strict schema validation, off
   - Vite 8
   - Tailwind CSS v4 (`@tailwindcss/vite`)
   - Lucide Icons (`lucide-react`)
-  - Browser Web Speech API (`SpeechRecognition` / `webkitSpeechRecognition`)
+  - Web Speech API + Whisper Cloud Audio Recording
 - **Backend:**
   - Python 3.10+
-  - FastAPI
-  - Uvicorn
+  - FastAPI & Uvicorn
   - Pydantic v2 & Pydantic-Settings
-  - SQLAlchemy 2.0
-  - SQLite (Local persistence)
-  - Google Generative AI (Gemini Flash)
-- **Testing & Quality Assurance:**
-  - Pytest + FastAPI TestClient + HTTPX
-  - Vitest + Oxlint
+  - SQLAlchemy 2.0 (with SQLite PRAGMA Foreign Keys)
+  - PyJWT & Passlib (Bcrypt)
+  - ReportLab & PyPDFium2 / PDFMiner
+  - Pillow (PIL)
+- **AI & Cloud Engine:**
+  - **Groq Cloud API** (Default models: `llama-3.3-70b-versatile`, `qwen/qwen3.8-27b`, `whisper-large-v3-turbo`)
+  - Deterministic Offline Demo Mode (fallback for local development and testing)
+- **Automated Testing & Security:**
+  - Pytest + FastAPI TestClient + HTTPX (68 automated backend tests)
+  - Vitest (7 frontend unit & integration tests)
+  - NPM Audit (0 vulnerabilities)
 
 ---
 
-## Features
+## Core Features & Workflow
 
 1. **Natural-Language Form Generation:**
-   - Prompt-based dynamic form schema generation.
-   - Works with live Google Gemini API or deterministic offline Demo Mode.
-   - Generates 8 supported field types: `text`, `email`, `number`, `date`, `textarea`, `select`, `checkbox`, `radio`.
-2. **Dynamic Form Rendering:**
-   - Accessible input controls with required indicators (`*`).
-   - Real-time client-side format & mandatory field checks.
-   - Clean black-and-white minimalist design with zero visual clutter.
-3. **Voice-Assisted Form Completion:**
-   - Integrated browser Web Speech recognition with recording state pulses.
-   - Schema-aware slot-filling engine mapping phrases to form fields (e.g., *"My name is Madan and my department is Artificial Intelligence & Data Science"*).
-   - Review proposed changes with an instant diff before applying.
-   - Full manual fallback for browsers without microphone or speech API support.
-4. **Reliable Submissions & History:**
-   - Server-side re-validation against database schemas.
-   - Stored in SQLite with relational integrity and cascade rules.
-   - Submissions history viewer with timestamps and structured data cards.
+   - Prompt-driven schema synthesis via Groq cloud LLMs.
+   - Generates 8 standard field types: `text`, `email`, `number`, `date`, `textarea`, `select`, `checkbox`, `radio`.
+   - Strict server-side schema verification preventing invalid or duplicate fields.
+
+2. **Hybrid Document Ingestion & Extraction:**
+   - **Interactive AcroForms:** Directly extracts native PDF form widgets and fields.
+   - **Digital PDFs:** Parses structured text blocks with layout-aware heuristics.
+   - **Scanned Images & Forms:** Uses Groq Vision OCR to read scanned registration cards and receipts.
+
+3. **Multi-Turn Conversational Form Filling:**
+   - Stateful dialog sessions tracking filled vs. missing required fields.
+   - Schema-aware slot mapping (identifies names, dates, phone numbers, and select options).
+   - Validates choices against allowed select/radio values and prompts users for invalid spoken options.
+   - Preserves string identifiers (register numbers, phone numbers) with leading zeros.
+
+4. **Speech-to-Text Transcription:**
+   - Live microphone capture supporting WebM, WAV, MP3, M4A, OGG, and FLAC.
+   - Transcribed via Groq Cloud Whisper (`whisper-large-v3-turbo`).
+
+5. **Draft Autosave & Sync:**
+   - Periodic background saving per user/form.
+   - Isolated draft storage preventing cross-user data overwrite.
+
+6. **Automated Submission & PDF Export:**
+   - Server-side submission validation verifying required fields and type constraints.
+   - Generates downloadable completed PDF documents using ReportLab.
+   - Authenticated PDF download endpoints supporting both Bearer headers and query tokens.
+
+---
+
+## Security Model & Hardening
+
+- **JWT Secret Enforcement:** Hardcoded secrets removed. In `ENVIRONMENT=production`, a cryptographically strong `JWT_SECRET_KEY` (minimum 32 characters) is strictly enforced at application boot.
+- **Fail-Safe Authorization:** Anonymous token degradation is eliminated; malformed or expired tokens immediately return `401 Unauthorized`.
+- **Resource Isolation & Ownership:** Users cannot read, modify, or delete other users' private forms, drafts, conversational sessions, submissions, or generated PDFs.
+- **Rate Limiting:** Sliding-window login brute-force protection (10 attempts / 5 minutes) returning `429 Too Many Requests`.
+- **Upload Protection:** 10MB size limits, MIME & extension whitelisting, file content inspection, randomized server-controlled filenames, path-traversal prevention, and automatic cleanup of temporary files on processing errors.
+- **Error Shielding:** Internal database errors and raw stack traces are masked from clients; debug information is logged securely server-side.
+- **CORS Safeguards:** Origins are configurable via JSON array; wildcards (`*`) combined with credentials are strictly forbidden.
 
 ---
 
@@ -82,7 +114,7 @@ Built with a monochrome black-and-white aesthetic, strict schema validation, off
 
 - **Node.js:** v18+ (v24 tested)
 - **Python:** v3.10+
-- **Browser:** Chrome, Edge, Safari, or Chromium-based browsers for Web Speech API (Firefox supported with manual input fallback).
+- **Groq Cloud API Key:** Obtain from [Groq Console](https://console.groq.com/keys) (optional if running in Demo Mode).
 
 ---
 
@@ -101,7 +133,7 @@ python -m venv venv
 .\venv\Scripts\Activate.ps1
 # Windows Command Prompt:
 .\venv\Scripts\activate.bat
-# Linux/macOS:
+# Linux / macOS:
 source venv/bin/activate
 
 # Install dependencies
@@ -110,22 +142,37 @@ pip install -r requirements.txt
 
 ### 2. Configure Backend Environment
 
-Copy `.env.example` to `.env`:
+Copy `backend/.env.example` to `backend/.env`:
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `backend/.env` as needed:
+Edit `backend/.env` with your settings:
 ```env
-PROJECT_NAME="AI Voice Form Builder"
+PROJECT_NAME="AI Voice Form Assistant"
+ENVIRONMENT="development"
 DATABASE_URL="sqlite:///./app.db"
-CORS_ORIGINS=["http://localhost:5173", "http://127.0.0.1:5173"]
+CORS_ORIGINS=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5174", "http://127.0.0.1:5174"]
 
-# Optional: Set Gemini API key for live AI generation.
-# If left empty, the application runs automatically in offline Demo Mode.
-GEMINI_API_KEY=""
-GEMINI_MODEL="gemini-1.5-flash"
+# Groq Cloud AI Configuration
+GROQ_API_KEY="gsk_your_groq_api_key_here"
+GROQ_MODEL="qwen/qwen3.8-27b"
+GROQ_VISION_MODEL="qwen/qwen3.8-27b"
+GROQ_TRANSCRIPTION_MODEL="whisper-large-v3-turbo"
+AI_PROVIDER="groq"
+AI_DEMO_MODE=false
+ALLOW_PRODUCTION_DEMO_MODE=false
+
+# Security & JWT
+JWT_SECRET_KEY="generate-a-secure-random-32-char-secret"
+ACCESS_TOKEN_EXPIRE_MINUTES=10080
+SEED_DEMO_USER=false
+
+# Server
+HOST="127.0.0.1"
+PORT=8090
+LOG_LEVEL="INFO"
 ```
 
 ### 3. Setup Frontend
@@ -136,27 +183,27 @@ cd ../frontend
 # Install dependencies
 npm install
 
-# Verify configuration
+# Configure environment
 cp .env.example .env
 ```
 
-`frontend/.env` contents:
+`frontend/.env`:
 ```env
-VITE_API_BASE_URL="http://127.0.0.1:8000/api"
+VITE_API_BASE_URL="http://127.0.0.1:8090/api"
 ```
 
 ---
 
-## Running the Application
+## Running the Application Locally
 
 ### 1. Start Backend Server
 ```bash
 cd backend
-.\venv\Scripts\uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+.\venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8090
 ```
-- API Base: `http://127.0.0.1:8000`
-- Interactive API Docs (Swagger): `http://127.0.0.1:8000/docs`
-- Health Endpoint: `http://127.0.0.1:8000/api/health`
+- API Base URL: `http://127.0.0.1:8090`
+- API Documentation (Swagger): `http://127.0.0.1:8090/docs` (disabled in production)
+- Health Check: `http://127.0.0.1:8090/api/health`
 
 ### 2. Start Frontend Dev Server
 In a separate terminal:
@@ -164,58 +211,58 @@ In a separate terminal:
 cd frontend
 npm run dev
 ```
-Open your browser at: `http://localhost:5173`
+Open your browser at `http://localhost:5173`.
 
 ---
 
 ## Running Automated Tests
 
-### Backend Test Suite (Pytest)
+### 1. Backend Pytest Suite
 ```bash
 cd backend
 .\venv\Scripts\pytest.exe
 ```
-Runs 14 automated unit, integration, security, and reliability tests covering CRUD, AI generation, voice mapping, and input validation.
+Executes all 68 automated unit, integration, authentication, and security hardening tests.
 
-### Backend End-to-End Persistence Check
+### 2. Backend End-to-End Verification Check
 ```bash
 cd backend
 .\venv\Scripts\python.exe verify_e2e.py
 ```
-Validates real SQLite database persistence and data retention across simulated application restarts.
+Performs a 10-step full-lifecycle integration test covering live AI form synthesis, voice mapping, hybrid document parsing, Whisper transcription, conversation session flow, draft autosave, submission validation, PDF generation, and SQLite database persistence across application restarts.
 
-### Frontend Test Suite (Vitest)
+### 3. Frontend Vitest Suite
 ```bash
 cd frontend
 npm test
 ```
-Runs frontend unit tests for API error handling and connection failure states.
+Executes 7 frontend integration tests verifying API failure handling, network error states, and storage behaviors.
 
-### Frontend Linting & Production Build
+### 4. Frontend Production Build & Audit
 ```bash
 cd frontend
-npm run lint
 npm run build
+npm audit
 ```
 
 ---
 
-## Demo Mode vs Live AI Mode
+## Production Deployment Checklist
 
-| Feature | Demo Mode (Default) | Live Gemini AI Mode |
-|---|---|---|
-| **API Key Required** | No (Works 100% Offline) | Yes (`GEMINI_API_KEY` in `backend/.env`) |
-| **Generation Strategy** | Deterministic keyword extraction + archetypes | Google Gemini 1.5 Flash API |
-| **Field Types Supported** | All 8 Types | All 8 Types |
-| **Status Indicator** | Badged `AI: Demo Mode` | Badged `AI: Gemini Active` |
+1. **Environment Mode:** Set `ENVIRONMENT="production"` in `backend/.env`.
+2. **Secrets:** Generate a 64-character random secret:
+   ```bash
+   python -c "import secrets; print(secrets.token_hex(32))"
+   ```
+   Set `JWT_SECRET_KEY` with this value. Do not share or commit this key.
+3. **CORS:** Restrict `CORS_ORIGINS` to the exact public domain of your frontend (e.g. `["https://app.yourdomain.com"]`).
+4. **Groq Credentials:** Provide a valid `GROQ_API_KEY`. In production, `AI_DEMO_MODE` is disabled by default to prevent serving synthetic forms.
+5. **Database:** SQLite is suitable for single-instance deployments with local persistent disks. If scaling horizontally across multiple web nodes, configure `DATABASE_URL` with a managed PostgreSQL connection URI (`postgresql://...`).
+6. **Reverse Proxy:** Run Uvicorn behind Nginx or Caddy with TLS (HTTPS) termination, HTTP/2, and client upload limit headers (`client_max_body_size 15M;`).
+7. **Storage:** Ensure `backend/uploads/` is backed by persistent volume storage with appropriate read/write file permissions.
 
 ---
 
-## Troubleshooting
+## License
 
-- **Microphone Permission Denied:**
-  Ensure browser microphone permissions are enabled for `http://localhost:5173`. Alternatively, use the *Map Spoken Text* simulation box directly in the UI.
-- **Backend Connection Error:**
-  Verify that Uvicorn is active on `http://127.0.0.1:8000` and CORS includes `http://localhost:5173`.
-- **Database Location:**
-  The SQLite database is located at `backend/app.db`. Existing tables and data are preserved across restarts.
+This project is licensed under the MIT License.

@@ -14,7 +14,10 @@ def health_check(db: Session = Depends(get_db)):
     try:
         db.execute(text("SELECT 1"))
     except Exception as e:
-        db_status = f"unhealthy: {str(e)}"
+        from app.core.logging import logger
+        logger.error(f"Database health check failed: {e}")
+        db_status = "unhealthy"
+
 
     is_ai_active = ai_provider.is_groq_configured()
     ai_mode = "groq" if is_ai_active else "demo"

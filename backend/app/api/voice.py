@@ -89,8 +89,9 @@ async def transcribe_speech(
         logger.error(f"Transcription error: {e.message}")
         raise HTTPException(status_code=e.status_code, detail=e.message)
     except Exception as e:
-        logger.error(f"Unexpected error in transcribe_speech: {e}")
+        logger.error(f"Unexpected error in transcribe_speech: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Speech transcription failed: {str(e)}"
+            detail="Speech transcription failed due to an unexpected internal error. Please try again."
         )
+

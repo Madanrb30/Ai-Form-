@@ -139,6 +139,7 @@ class FormCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
     schema_json: FormSchemaDefinition
+    is_public: Optional[bool] = Field(default=True, description="Whether the form is publicly viewable and fillable")
 
 
 class FormUpdate(BaseModel):
@@ -146,6 +147,7 @@ class FormUpdate(BaseModel):
     title: Optional[str] = Field(default=None, min_length=1, max_length=255)
     description: Optional[str] = None
     schema_json: Optional[FormSchemaDefinition] = None
+    is_public: Optional[bool] = None
 
 
 class FormResponse(BaseModel):
@@ -154,8 +156,11 @@ class FormResponse(BaseModel):
     title: str
     description: Optional[str] = None
     schema_json: FormSchemaDefinition
+    user_id: Optional[int] = None
+    is_public: bool = True
     created_at: datetime
     updated_at: datetime
+
 
 
 class VoiceMapRequest(BaseModel):

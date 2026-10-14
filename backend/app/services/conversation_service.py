@@ -26,11 +26,27 @@ class ConversationManager:
         if session_id:
             existing = db.query(ConversationSession).filter(ConversationSession.id == session_id).first()
             if existing:
-                # Prevent cross-user session tampering
-                if existing.user_id is not None and user_id is not None and existing.user_id != user_id:
-                    from fastapi import HTTPException
-                    raise HTTPException(status_code=403, detail="You do not have permission to access this conversation session.")
+                from fastapi import HTTPException, status
+                # 1. Enforce form isolation
+                if existing.form_id != form_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Conversation session belongs to a different form."
+                    )
+                # 2. Prevent cross-user session tampering & anonymous hijacking
+                if existing.user_id is not None:
+                    if user_id is None:
+                        raise HTTPException(
+                            status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Authentication required to access this conversation session."
+                        )
+                    if existing.user_id != user_id:
+                        raise HTTPException(
+                            status_code=status.HTTP_403_FORBIDDEN,
+                            detail="You do not have permission to access this conversation session."
+                        )
                 return existing
+
 
         new_id = session_id or f"sess_{uuid.uuid4().hex[:16]}"
         new_session = ConversationSession(

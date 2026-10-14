@@ -4,13 +4,14 @@ from typing import Optional
 
 class UserRegisterRequest(BaseModel):
     email: EmailStr
-    password: str = Field(..., min_length=4)
-    full_name: Optional[str] = None
+    password: str = Field(..., min_length=8, max_length=128, description="Password must be between 8 and 128 characters")
+    full_name: Optional[str] = Field(default=None, max_length=100)
 
 
 class UserLoginRequest(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(..., min_length=1, max_length=128)
+
 
 
 class UserResponse(BaseModel):

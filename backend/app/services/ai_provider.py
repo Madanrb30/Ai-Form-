@@ -185,19 +185,35 @@ class AIProviderService:
         model_name = settings.GROQ_MODEL
 
         try:
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {"role": "system", "content": SYSTEM_FORM_GEN_PROMPT},
-                    {"role": "user", "content": f"Generate form for request: {prompt.strip()}"}
-                ],
-                temperature=0.2,
-                response_format={"type": "json_object"},
-            )
+            try:
+                response = client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_FORM_GEN_PROMPT},
+                        {"role": "user", "content": f"Generate form for request: {prompt.strip()}"}
+                    ],
+                    temperature=0.2,
+                    response_format={"type": "json_object"},
+                )
+            except APIError as api_err:
+                if ("model_not_found" in str(api_err) or "does not exist" in str(api_err)) and settings.GROQ_VISION_MODEL != model_name:
+                    logger.info(f"Model {model_name} not available, falling back to {settings.GROQ_VISION_MODEL}")
+                    response = client.chat.completions.create(
+                        model=settings.GROQ_VISION_MODEL,
+                        messages=[
+                            {"role": "system", "content": SYSTEM_FORM_GEN_PROMPT},
+                            {"role": "user", "content": f"Generate form for request: {prompt.strip()}"}
+                        ],
+                        temperature=0.2,
+                        response_format={"type": "json_object"},
+                    )
+                else:
+                    raise
             raw_text = response.choices[0].message.content
             data = self.extract_json(raw_text)
             validated = FormSchemaDefinition(**data)
             return validated
+
         except AuthenticationError as e:
             logger.error(f"Groq authentication error: {e}")
             raise AIProviderError("Invalid Groq API Key configured on server.", status_code=401)
@@ -430,17 +446,33 @@ class AIProviderService:
         )
 
         try:
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_speech}
-                ],
-                temperature=0.2,
-                response_format={"type": "json_object"},
-            )
+            try:
+                response = client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_speech}
+                    ],
+                    temperature=0.2,
+                    response_format={"type": "json_object"},
+                )
+            except APIError as api_err:
+                if ("model_not_found" in str(api_err) or "does not exist" in str(api_err)) and settings.GROQ_VISION_MODEL != model_name:
+                    logger.info(f"Model {model_name} not available, falling back to {settings.GROQ_VISION_MODEL}")
+                    response = client.chat.completions.create(
+                        model=settings.GROQ_VISION_MODEL,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_speech}
+                        ],
+                        temperature=0.2,
+                        response_format={"type": "json_object"},
+                    )
+                else:
+                    raise
             raw_text = response.choices[0].message.content
             return self.extract_json(raw_text)
+
         except AuthenticationError as e:
             logger.error(f"Groq authentication error in conversation turn: {e}")
             raise AIProviderError("Invalid Groq API Key configured on server.", status_code=401)

@@ -1,20 +1,46 @@
+import time
+from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Optional, Any
 import bcrypt
 import jwt
 from app.core.config import settings
 
+# In-memory sliding-window rate limiter for authentication endpoints
+_LOGIN_ATTEMPTS = defaultdict(list)
+MAX_LOGIN_ATTEMPTS = 10
+LOGIN_WINDOW_SECONDS = 300  # 5 minutes
+
+
+def check_login_rate_limit(key: str) -> bool:
+    """Returns True if under rate limit, False if exceeded."""
+    now = time.time()
+    attempts = _LOGIN_ATTEMPTS[key]
+    _LOGIN_ATTEMPTS[key] = [t for t in attempts if now - t < LOGIN_WINDOW_SECONDS]
+    return len(_LOGIN_ATTEMPTS[key]) < MAX_LOGIN_ATTEMPTS
+
+
+def record_login_attempt(key: str):
+    _LOGIN_ATTEMPTS[key].append(time.time())
+
+
+def clear_login_attempts(key: str):
+    _LOGIN_ATTEMPTS.pop(key, None)
+
 
 def get_password_hash(password: str) -> str:
-    pwd_bytes = password.encode("utf-8")
+    # Cap input length at 128 characters to mitigate bcrypt CPU DoS
+    safe_password = password[:128]
+    pwd_bytes = safe_password.encode("utf-8")[:72]  # bcrypt 72-byte max
     salt = bcrypt.gensalt()
     return bcrypt.hashpw(pwd_bytes, salt).decode("utf-8")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     try:
+        safe_password = plain_password[:128]
         return bcrypt.checkpw(
-            plain_password.encode("utf-8"),
+            safe_password.encode("utf-8")[:72],
             hashed_password.encode("utf-8")
         )
     except Exception:
@@ -40,13 +66,15 @@ def create_access_token(subject: Any, expires_delta: Optional[timedelta] = None)
     return encoded_jwt
 
 
-def decode_access_token(token: str) -> Optional[dict]:
-    try:
-        payload = jwt.decode(
-            token,
-            settings.JWT_SECRET_KEY,
-            algorithms=[settings.JWT_ALGORITHM]
-        )
-        return payload
-    except jwt.PyJWTError:
-        return None
+def decode_access_token(token: str) -> dict:
+    """
+    Decodes and validates a JWT access token.
+    Raises jwt.ExpiredSignatureError, jwt.InvalidTokenError, or jwt.PyJWTError
+    if the token is invalid or expired.
+    """
+    return jwt.decode(
+        token,
+        settings.JWT_SECRET_KEY,
+        algorithms=[settings.JWT_ALGORITHM]
+    )
+

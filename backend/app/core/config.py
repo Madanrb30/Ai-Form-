@@ -1,12 +1,28 @@
 import os
-from typing import List
+import json
+import logging
+from typing import List, Union
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+INSECURE_SECRETS = {
+    "voxform-secure-production-jwt-secret-key-random-88492",
+    "replace_with_a_secure_random_secret_in_production",
+    "secret",
+    "jwt_secret",
+    "changeme",
+    "your-secret-key",
+}
+
+DEV_FALLBACK_SECRET = "voxform-dev-ephemeral-jwt-key-2026-safe-for-local-testing-only-99"
 
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "AI Voice Form Assistant"
     API_V1_PREFIX: str = "/api"
+    ENVIRONMENT: str = "development"  # "development", "testing", "production"
     DATABASE_URL: str = "sqlite:///./app.db"
+
     CORS_ORIGINS: List[str] = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
@@ -16,6 +32,7 @@ class Settings(BaseSettings):
         "http://127.0.0.1:3000",
     ]
 
+    # AI Configuration (Groq is the primary provider)
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
     GROQ_VISION_MODEL: str = "qwen/qwen3.8-27b"
@@ -26,16 +43,18 @@ class Settings(BaseSettings):
     MAX_IMAGE_DIMENSION: int = 2048
     IMAGE_BATCH_SIZE: int = 2
     AI_PROVIDER: str = "groq"
-    AI_DEMO_MODE: bool = True
+    AI_DEMO_MODE: bool = False
+    ALLOW_PRODUCTION_DEMO_MODE: bool = False
 
-    # Gemini settings (Legacy/Fallback migration support)
+    # Legacy AI migration support (optional)
     GEMINI_API_KEY: str = ""
     GEMINI_MODEL: str = "gemini-1.5-flash"
 
     # Security & Authentication
-    JWT_SECRET_KEY: str = "voxform-secure-production-jwt-secret-key-random-88492"
+    JWT_SECRET_KEY: str = ""
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
+    SEED_DEMO_USER: bool = True  # Automatically set to False in production
 
     # File Uploads
     UPLOAD_DIR: str = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
@@ -52,8 +71,61 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:
+        if isinstance(v, str):
+            clean_str = v.strip()
+            if clean_str.startswith("[") and clean_str.endswith("]"):
+                try:
+                    return json.loads(clean_str)
+                except Exception:
+                    pass
+            return [origin.strip() for origin in clean_str.split(",") if origin.strip()]
+        return v
+
+    @model_validator(mode="after")
+    def validate_production_and_secrets(self):
+        is_production = self.ENVIRONMENT.lower() == "production"
+
+        # 1. Enforce JWT Secret
+        secret = (self.JWT_SECRET_KEY or "").strip()
+        if is_production:
+            if not secret or len(secret) < 32 or secret in INSECURE_SECRETS:
+                raise ValueError(
+                    "Production configuration error: A strong, unique JWT_SECRET_KEY "
+                    "(at least 32 characters) must be configured in production environment."
+                )
+            self.SEED_DEMO_USER = False
+        else:
+            if not secret or secret in INSECURE_SECRETS:
+                # Use development fallback secret for local dev/test if not specified in .env
+                self.JWT_SECRET_KEY = DEV_FALLBACK_SECRET
+
+        # 2. Production AI Demo Mode check
+        if is_production and self.AI_DEMO_MODE and not self.ALLOW_PRODUCTION_DEMO_MODE:
+            raise ValueError(
+                "Production configuration error: AI_DEMO_MODE cannot be enabled in production "
+                "without explicit ALLOW_PRODUCTION_DEMO_MODE=True."
+            )
+
+        # 3. Production Live AI key check
+        if is_production and not self.AI_DEMO_MODE and not self.GROQ_API_KEY.strip():
+            raise ValueError(
+                "Production configuration error: GROQ_API_KEY must be provided when live AI is active in production."
+            )
+
+        # 4. CORS wildcards check in production
+        if is_production and ("*" in self.CORS_ORIGINS):
+            raise ValueError(
+                "Production configuration error: Wildcard '*' is not permitted in CORS_ORIGINS when credentials are enabled."
+            )
+
+        return self
+
 
 settings = Settings()
 
 # Ensure uploads directory exists
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+

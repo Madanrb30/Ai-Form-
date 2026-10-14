@@ -150,7 +150,7 @@ def run_e2e_verification():
         conv_res = client.post(
             f"/api/forms/{form_id}/conversation",
             json={
-                "transcript": "My full name is Madan and my department is Artificial Intelligence",
+                "transcript": "My full name is Madan and my department is Computer Science",
                 "current_values": {}
             }
         )
@@ -175,15 +175,23 @@ def run_e2e_verification():
         print("Draft retrieved successfully")
 
         print("--- 8. Form Submission ---")
-        sub_payload = {
-            "full_name": "Madan",
-            "register_number": "REG-2026-99",
-            "department": "Artificial Intelligence & Data Science",
-            "email": "madan@university.edu",
-            "phone_number": "+1 555-0199",
-            "date_of_birth": "2000-08-15",
-            "gender": "Male"
-        }
+        sub_payload = {}
+        for f in gen_data["schema_data"].get("fields", []):
+            fname = f["name"]
+            ftype = f.get("type", "text")
+            fopts = f.get("options") or []
+            if ftype == "email":
+                sub_payload[fname] = "madan@university.edu"
+            elif ftype == "number":
+                sub_payload[fname] = 2026
+            elif ftype == "date":
+                sub_payload[fname] = "2000-08-15"
+            elif ftype in ("select", "radio"):
+                sub_payload[fname] = fopts[0] if fopts else "Male"
+            elif ftype == "checkbox":
+                sub_payload[fname] = [fopts[0]] if fopts else ["Active"]
+            else:
+                sub_payload[fname] = "Madan" if "name" in fname else ("REG-2026-99" if "reg" in fname else "Computer Science")
         sub_res = client.post(
             f"/api/forms/{form_id}/submissions",
             json={"response_json": sub_payload}

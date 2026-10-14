@@ -1,5 +1,6 @@
 import os
 import io
+import html
 import logging
 from typing import Tuple, List, Dict, Any, Optional
 from pypdf import PdfReader, PdfWriter
@@ -310,25 +311,28 @@ def generate_completed_pdf(
     out_filename = f"submission_{submission_id}.pdf"
     out_path = os.path.join(settings.UPLOAD_DIR, out_filename)
 
-    # 1. Check if original PDF has AcroForms to fill
-    if original_pdf_path and os.path.exists(original_pdf_path):
-        try:
-            reader = PdfReader(original_pdf_path)
-            if reader.get_fields():
-                writer = PdfWriter()
-                writer.append(reader)
-                # Map fields
-                field_dict = {}
-                for f in fields_schema:
-                    fname = f.get("name")
-                    if fname in response_data:
-                        field_dict[fname] = str(response_data[fname])
-                writer.update_page_form_field_values(writer.pages[0], field_dict)
-                with open(out_path, "wb") as f_out:
-                    writer.write(f_out)
-                return out_path
-        except Exception as e:
-            logger.warning(f"AcroForm filling failed, falling back to clean ReportLab PDF: {e}")
+    # 1. Check if original PDF has AcroForms to fill (with path traversal guard)
+    if original_pdf_path:
+        real_upload_dir = os.path.realpath(settings.UPLOAD_DIR)
+        real_orig_path = os.path.realpath(original_pdf_path)
+        if (real_orig_path.startswith(real_upload_dir) or os.path.dirname(real_orig_path) == real_upload_dir) and os.path.exists(real_orig_path):
+            try:
+                reader = PdfReader(real_orig_path)
+                if reader.get_fields():
+                    writer = PdfWriter()
+                    writer.append(reader)
+                    # Map fields
+                    field_dict = {}
+                    for f in fields_schema:
+                        fname = f.get("name")
+                        if fname in response_data:
+                            field_dict[fname] = str(response_data[fname])
+                    writer.update_page_form_field_values(writer.pages[0], field_dict)
+                    with open(out_path, "wb") as f_out:
+                        writer.write(f_out)
+                    return out_path
+            except Exception as e:
+                logger.warning(f"AcroForm filling failed, falling back to clean ReportLab PDF: {e}")
 
     # 2. Generate standard clean PDF with ReportLab
     doc = SimpleDocTemplate(
@@ -385,11 +389,13 @@ def generate_completed_pdf(
 
     story = []
 
-    # Title & Metadata
-    story.append(Paragraph(form_title, title_style))
+    # Title & Metadata (HTML escaped for ReportLab Paragraph safety)
+    safe_title = html.escape(form_title or "Form Submission")
+    story.append(Paragraph(safe_title, title_style))
     if form_description:
+        safe_desc = html.escape(form_description)
         story.append(Spacer(1, 4))
-        story.append(Paragraph(form_description, desc_style))
+        story.append(Paragraph(safe_desc, desc_style))
     story.append(Spacer(1, 8))
     story.append(Paragraph(f"Official Submission ID: #{submission_id} • AI Voice Form Assistant", meta_style))
     story.append(Spacer(1, 10))
@@ -412,9 +418,11 @@ def generate_completed_pdf(
         else:
             display_val = str(val)
 
+        safe_flabel = html.escape(str(flabel))
+        safe_display_val = html.escape(display_val)
         table_data.append([
-            Paragraph(flabel, label_style),
-            Paragraph(display_val, val_style),
+            Paragraph(safe_flabel, label_style),
+            Paragraph(safe_display_val, val_style),
         ])
 
     col_widths = [2.5 * inch, 4.5 * inch]

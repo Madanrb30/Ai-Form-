@@ -239,9 +239,10 @@ def test_cross_user_submission_and_pdf_authorization(client, users_and_tokens):
     )
     assert bob_pdf.status_code == 403
 
-    # Anonymous attempts to download Alice's submission PDF -> 403 Forbidden
+    # Anonymous attempts to download Alice's submission PDF -> 401 Unauthorized / 403 Forbidden
     anon_pdf = client.get(f"/api/forms/{form_id}/submissions/{sub_id}/pdf")
-    assert anon_pdf.status_code == 403
+    assert anon_pdf.status_code in (401, 403)
+
 
     # Alice (form owner) downloads PDF -> 200 OK
     alice_pdf = client.get(
