@@ -197,15 +197,23 @@ export default function SubmissionsPage({ formId, formTitle, setView }) {
                     <span className="font-mono text-neutral-500 text-[11px]">
                       {subDate}
                     </span>
-                    <a
-                      href={api.getSubmissionPdfUrl(formId, sub.id)}
-                      download={`submission_${sub.id}.pdf`}
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          toast("Generating and downloading PDF...", "info");
+                          await api.downloadSubmissionPdf(formId, sub.id, `${form?.title || 'Form'}_Submission_${sub.id}.pdf`);
+                          toast("PDF downloaded successfully.", "success");
+                        } catch (err) {
+                          toast(`PDF download failed: ${err.message}`, "error");
+                        }
+                      }}
                       className="inline-flex items-center space-x-1 px-2.5 py-1 bg-neutral-50 hover:bg-neutral-100 border border-[#E5E5E5] hover:border-black rounded-lg text-[11px] font-semibold text-neutral-800 transition-colors cursor-pointer"
                       title="Download Generated Completed PDF Document"
                     >
                       <Download className="w-3 h-3 text-neutral-600" />
                       <span>PDF</span>
-                    </a>
+                    </button>
                   </div>
                 </div>
 

@@ -166,15 +166,25 @@ export const api = {
     return `${API_BASE}/forms/${formId}/submissions/${subId}/pdf${query}`;
   },
   downloadSubmissionPdf: async (formId, subId, filename = null) => {
-    const url = `${API_BASE}/forms/${formId}/submissions/${subId}/pdf`;
     const token = getStoredToken();
+    const query = token ? `?token=${encodeURIComponent(token)}` : "";
+    const url = `${API_BASE}/forms/${formId}/submissions/${subId}/pdf${query}`;
     const headers = {};
     if (token) {
       headers["Authorization"] = `Bearer ${token}`;
     }
     const res = await fetch(url, { headers });
     if (!res.ok) {
-      throw new ApiError(`Failed to download PDF (${res.status})`, res.status);
+      let errMsg = `Failed to download PDF (${res.status})`;
+      try {
+        const errData = await res.json();
+        if (errData?.detail) {
+          errMsg = typeof errData.detail === "string" ? errData.detail : JSON.stringify(errData.detail);
+        }
+      } catch {
+        // use default error message
+      }
+      throw new ApiError(errMsg, res.status);
     }
     const blob = await res.blob();
     const blobUrl = window.URL.createObjectURL(blob);
@@ -184,7 +194,9 @@ export const api = {
     document.body.appendChild(link);
     link.click();
     link.remove();
-    window.URL.revokeObjectURL(blobUrl);
+    setTimeout(() => {
+      window.URL.revokeObjectURL(blobUrl);
+    }, 1000);
   },
 
   // Cloud Speech-to-Text Transcription (Groq Whisper, Sarvam AI)

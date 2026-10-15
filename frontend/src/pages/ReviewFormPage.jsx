@@ -6,6 +6,7 @@ import {
   Send,
   Loader2,
   FileCheck,
+  Download,
 } from "lucide-react";
 import { api } from "../services/api";
 import { storageService } from "../services/storageService";
@@ -190,8 +191,28 @@ export default function ReviewFormPage({ formId, values = {}, setView, initialSu
 
         <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-4">
           <button
+            type="button"
+            onClick={async () => {
+              try {
+                toast("Generating and downloading completed PDF...", "info");
+                await api.downloadSubmissionPdf(
+                  formId,
+                  submissionSuccess.id,
+                  `${form?.title || 'Form'}_Submission_${submissionSuccess.id}.pdf`
+                );
+                toast("PDF downloaded successfully.", "success");
+              } catch (err) {
+                toast(`PDF download failed: ${err.message}`, "error");
+              }
+            }}
+            className="w-full sm:w-auto px-5 py-2.5 bg-neutral-900 hover:bg-black text-white rounded-lg text-xs font-semibold transition-all cursor-pointer shadow-xs flex items-center justify-center space-x-1.5"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>Download PDF</span>
+          </button>
+          <button
             onClick={() => setView({ name: "submissions", formId, formTitle: form?.title })}
-            className="w-full sm:w-auto px-5 py-2.5 bg-[#111111] hover:bg-neutral-800 text-white rounded-lg text-xs font-semibold transition-all cursor-pointer shadow-xs"
+            className="w-full sm:w-auto px-5 py-2.5 border border-[#E5E5E5] hover:bg-neutral-50 text-neutral-800 rounded-lg text-xs font-semibold transition-all cursor-pointer"
           >
             View Submissions
           </button>

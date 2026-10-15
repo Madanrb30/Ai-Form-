@@ -9,8 +9,9 @@ from app.services.voice_mapping import (
     map_transcript_to_fields,
     match_dropdown_option,
     normalize_spoken_identifier,
+    parse_spoken_date,
 )
-from app.schemas.form import is_identifier_field
+from app.schemas.form import is_identifier_field, is_name_field, is_valid_name
 from app.services.ai_provider import ai_provider
 from app.core.logging import logger
 
@@ -93,6 +94,18 @@ class ConversationManager:
 
         text_lower = transcript.strip().lower()
 
+        # Initial greeting / empty transcript handler
+        if not transcript or text_lower in ["start", "hello", "hi", "hey", "vanakkam", "வணக்கம்"]:
+            next_missing = self._find_next_missing_field(fields, values, confirmed_fields)
+            state["current_field"] = next_missing.get("name") if next_missing else None
+            form_title = schema.get("title", form.title or "form")
+            if next_missing:
+                resp = f"Hello! Let's fill out the {form_title}. What is your {next_missing.get('label', next_missing.get('name'))}?"
+            else:
+                resp = f"Hello! All required fields for {form_title} are completed. Would you like to review and confirm before submitting?"
+                state["stage"] = "confirming_submission"
+            return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, state.get("stage", "filling"), history, transcript, state=state)
+
         # 1. Check for submission confirmation or submit voice commands
         is_confirm_submit = self._is_submission_confirmation(text_lower, state.get("stage"))
         if is_confirm_submit:
@@ -101,7 +114,7 @@ class ConversationManager:
                 resp = f"We cannot submit just yet because your {missing_required.get('label')} is still required. What is your {missing_required.get('label')}?"
                 state["current_field"] = missing_required.get("name")
                 return self._build_response(
-                    session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript
+                    session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript, state=state
                 )
             else:
                 return self._execute_submission(
@@ -123,7 +136,55 @@ class ConversationManager:
             resp = "Understood. Which field would you like to review or update?"
             state["stage"] = "filling"
             return self._build_response(
-                session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript
+                session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript, state=state
+            )
+
+        # Check for ambiguous "that's wrong" or "no that is wrong" without specified field or replacement
+        if re.search(r"\b(?:no\s*,?\s*)?(?:that(?:'s|\s+is)\s+wrong|that(?:'s|\s+is)\s+incorrect|it(?:'s|\s+is)\s+wrong)\b", text_lower):
+            if not any(w in text_lower for w in ["change", "replace", "update", "to", "with", "as"]):
+                resp = "Which field is incorrect? Please tell me what to update."
+                return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript, state=state)
+
+        # Check if the user is asking a question or inquiry about a field or form state
+        inquiry_field = self._detect_field_inquiry(text_lower, fields)
+        if inquiry_field:
+            fname = inquiry_field.get("name")
+            flabel = inquiry_field.get("label", fname)
+            curr_val = values.get(fname)
+
+            if curr_val is not None and str(curr_val).strip() != "":
+                if any(w in text_lower for w in ["valid", "correct", "right", "good"]):
+                    resp = f"Your {flabel} is currently recorded as '{curr_val}', and it is valid. Would you like to keep this or change it?"
+                elif any(w in text_lower for w in ["feel like", "feels like", "look like", "looks like", "sound like", "like a name"]):
+                    resp = f"Your {flabel} is currently recorded as '{curr_val}'. It looks fine. Would you like to keep this or change it?"
+                else:
+                    resp = f"Your {flabel} is currently recorded as '{curr_val}'. Would you like to keep this or change it?"
+            else:
+                resp = f"You haven't entered your {flabel} yet. What is your {flabel}?"
+                state["current_field"] = fname
+
+            return self._build_response(
+                session, db, values, confirmed_fields, needs_review, fields, resp, state.get("stage", "filling"), history, transcript, state=state
+            )
+
+        # Check for general status inquiry ("Is everything entered?", "Can I review?", "Does my form look correct?")
+        if any(p in text_lower for p in ["is everything", "does my form", "check my answers", "review my answers", "how does my form"]):
+            filled_summary = [f"{f.get('label', f.get('name'))}: '{values.get(f.get('name'))}'" for f in fields if values.get(f.get('name'))]
+            next_missing = self._find_next_missing_field(fields, values, confirmed_fields)
+            if filled_summary:
+                summary_str = ", ".join(filled_summary[:4])
+                if len(filled_summary) > 4:
+                    summary_str += f" and {len(filled_summary) - 4} more"
+                if next_missing:
+                    resp = f"So far, you have entered: {summary_str}. Your {next_missing.get('label')} is still needed. What is your {next_missing.get('label')}?"
+                else:
+                    resp = f"All required fields are completed: {summary_str}. Would you like to confirm and submit the form now?"
+                    state["stage"] = "confirming_submission"
+            else:
+                first_label = fields[0].get("label") if fields else "first detail"
+                resp = f"No fields have been entered yet. What is your {first_label}?"
+            return self._build_response(
+                session, db, values, confirmed_fields, needs_review, fields, resp, state.get("stage", "filling"), history, transcript, state=state
             )
 
         # 2. Check for standard voice navigation and control commands
@@ -135,7 +196,7 @@ class ConversationManager:
                     curr_label = f.get("label", curr)
                     break
             resp = f"Please provide your {curr_label or 'next detail'}."
-            return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, state.get("stage", "filling"), history, transcript)
+            return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, state.get("stage", "filling"), history, transcript, state=state)
 
         if any(cmd in text_lower for cmd in ["skip this field", "skip field", "skip"]):
             curr = state.get("current_field")
@@ -144,14 +205,38 @@ class ConversationManager:
             next_missing = self._find_next_missing_field(fields, values, confirmed_fields)
             state["current_field"] = next_missing.get("name") if next_missing else None
             resp = f"Skipped. What is your {next_missing.get('label')}?" if next_missing else "All required fields are ready. You can review and submit your form."
-            return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript)
+            return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript, state=state)
 
-        # 2. Check if user is directly answering the currently focused/prompted field
+        # 3. Check for "change the previous answer"
+        newly_mapped = {}
+        prev_match = re.search(
+            r"\b(?:change|correct|update|replace)\s+(?:the\s+|my\s+)?(?:previous|last)\s+(?:answer|value|field|response)\b",
+            text_lower
+        )
+        if prev_match:
+            last_mod = state.get("last_modified_field")
+            target_field = next((f for f in fields if f.get("name") == last_mod), None) if last_mod else None
+            if not target_field:
+                # Ambiguous: ask clarification question instead of changing arbitrary field
+                resp = "Which previous answer would you like to change?"
+                return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript, state=state)
+
+            # Check if replacement value is provided in the utterance (e.g., "Change the previous answer to Madan RB")
+            val_match = re.search(r"\b(?:to|with|as)\s+(.+)$", transcript, re.IGNORECASE)
+            if val_match:
+                new_val_raw = val_match.group(1).strip()
+                newly_mapped[target_field.get("name")] = new_val_raw
+            else:
+                state["current_field"] = target_field.get("name")
+                resp = f"What would you like to change your {target_field.get('label', target_field.get('name'))} to?"
+                return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript, state=state)
+
+        # 4. Check if user is directly answering the currently focused/prompted field
         current_field_name = state.get("current_field")
         curr_field_obj = next((f for f in fields if f.get("name") == current_field_name), None)
 
         direct_curr_match = None
-        if curr_field_obj:
+        if curr_field_obj and not newly_mapped:
             ftype = curr_field_obj.get("type", "text")
             is_ident = is_identifier_field(curr_field_obj)
             options = curr_field_obj.get("options") or []
@@ -163,41 +248,73 @@ class ConversationManager:
                 elif is_ambig:
                     needs_review[current_field_name] = f"Multiple matching options for {curr_field_obj.get('label')}. Please clarify."
                     resp = f"Did you mean one of: {', '.join(options)}?"
-                    return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript)
+                    return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript, state=state)
             elif is_ident:
                 norm_id = normalize_spoken_identifier(transcript)
-                # If transcript was an identifier answer (no long English sentence words)
                 words = [w for w in re.split(r"\s+", transcript.strip()) if w]
                 if len(words) <= 10 and re.match(r"^[A-Za-z0-9_\-\+]+$", norm_id):
                     direct_curr_match = (current_field_name, norm_id)
+            elif ftype == "email":
+                clean_email = transcript.strip().replace(" at the rate ", "@").replace(" at ", "@").replace(" dot ", ".").replace(" ", "")
+                clean_email = clean_email.strip(",.;:")
+                if re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", clean_email):
+                    direct_curr_match = (current_field_name, clean_email)
+            elif ftype in ("phone", "tel") or any(w in current_field_name.lower() for w in ["phone", "mobile"]):
+                digits = re.sub(r"[^\d]", "", normalize_spoken_identifier(transcript))
+                if len(digits) >= 7 and len(digits) <= 15:
+                    direct_curr_match = (current_field_name, digits)
+            elif ftype == "date":
+                parsed_d = parse_spoken_date(transcript)
+                if parsed_d:
+                    direct_curr_match = (current_field_name, parsed_d)
+            elif ftype == "number":
+                norm_num = normalize_spoken_identifier(transcript)
+                num_m = re.search(r"\b\d+(?:\.\d+)?\b", norm_num)
+                if num_m:
+                    val_num = float(num_m.group(0)) if "." in num_m.group(0) else int(num_m.group(0))
+                    direct_curr_match = (current_field_name, val_num)
+            elif ftype in ("text", "textarea"):
+                is_q = (
+                    transcript.strip().endswith("?")
+                    or bool(re.search(r"^(does|do|is|are|was|were|can|could|would|should|how|what|why|did|has|have)\b", text_lower))
+                    or any(p in text_lower for p in ["feel like", "feels like", "look like", "looks like", "sound like", "is valid", "valid or not", "is correct", "like a name"])
+                )
+                has_cmd_words = any(w in text_lower for w in ["change", "replace", "update", "set to", "my name", "my email", "my phone", "is wrong", "instead of"])
+                if not is_q and not has_cmd_words and not any(w in text_lower for w in ["what", "why", "how", "repeat", "skip", "help", "cancel"]):
+                    clean_ans = transcript.strip().strip(".?!")
+                    if is_name_field(curr_field_obj):
+                        if is_valid_name(clean_ans):
+                            direct_curr_match = (current_field_name, clean_ans)
+                    else:
+                        if clean_ans and len(clean_ans) > 0:
+                            direct_curr_match = (current_field_name, clean_ans)
 
-        # 3. Extract values: Use deterministic slot-filling
-        newly_mapped = map_transcript_to_fields(transcript, schema)
-        if direct_curr_match:
+        # 5. Extract values: Use deterministic slot-filling
+        if not newly_mapped:
+            newly_mapped = map_transcript_to_fields(transcript, schema)
+        if direct_curr_match and direct_curr_match[0] not in newly_mapped:
             newly_mapped[direct_curr_match[0]] = direct_curr_match[1]
 
-        # 4. Check for unhandled invalid dropdown option attempts
-        # e.g., "My department is Biotechnology" when options are AI&DS, CSE, ECE, Mechanical
+        # 6. Check for unhandled invalid dropdown option attempts
         for f in fields:
             fname = f.get("name")
             flabel = f.get("label", fname)
             ftype = f.get("type", "text")
             options = f.get("options") or []
             if ftype in ("select", "radio") and options and fname not in newly_mapped:
-                # Check if the field was mentioned by name in transcript
                 pattern = rf"\b{re.escape(flabel.lower())}\b|\b{re.escape(fname.lower().replace('_', ' '))}\b"
                 if re.search(pattern, text_lower):
-                    # User attempted to answer this field, but value was not valid
                     opts_str = ", ".join(options)
                     needs_review[fname] = f"Spoken value is not a valid option for {flabel}. Available options: {opts_str}"
                     resp = f"That is not one of the available options for {flabel}. Please choose from: {opts_str}."
                     state["current_field"] = fname
                     return self._build_response(
-                        session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript
+                        session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript, state=state
                     )
 
         newly_filled = []
         assistant_reply = ""
+        is_user_correction = any(w in text_lower for w in ["change", "replace", "correct", "update", "wrong", "incorrect", "instead", "not"])
 
         if newly_mapped:
             for k, v in newly_mapped.items():
@@ -205,53 +322,98 @@ class ConversationManager:
                 if not target_field:
                     continue
 
-                # Type-specific validation
                 ftype = target_field.get("type", "text")
+                flbl = target_field.get("label", k)
                 is_ident = is_identifier_field(target_field)
-                if is_ident:
-                    v = normalize_spoken_identifier(str(v))
+                val_str = str(v).strip()
+
+                # Robust Type-specific validation
+                if is_name_field(target_field):
+                    if not is_valid_name(val_str):
+                        needs_review[k] = f"'{v}' does not appear to be a valid name."
+                        resp = f"'{v}' does not appear to be a valid name. Please provide your full name."
+                        state["current_field"] = k
+                        return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript, state=state)
+                    v = val_str
+                elif is_ident:
+                    v = normalize_spoken_identifier(val_str)
                 elif ftype in ("select", "radio"):
                     options = target_field.get("options") or []
-                    matched_opt, is_ambig = match_dropdown_option(str(v), options)
+                    matched_opt, is_ambig = match_dropdown_option(val_str, options)
                     if matched_opt:
                         v = matched_opt
                     else:
-                        needs_review[k] = f"Invalid option '{v}' for {target_field.get('label')}."
-                        continue
+                        opts_str = ", ".join(options)
+                        needs_review[k] = f"Invalid option '{v}' for {flbl}."
+                        resp = f"'{v}' is not a valid option for {flbl}. Please choose from: {opts_str}."
+                        state["current_field"] = k
+                        return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript, state=state)
+                elif ftype == "email":
+                    clean_email = val_str.replace(" at the rate ", "@").replace(" at ", "@").replace(" dot ", ".").replace(" ", "")
+                    clean_email = clean_email.strip(",.;:")
+                    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", clean_email):
+                        needs_review[k] = f"Invalid email format: '{v}'"
+                        resp = f"'{v}' does not appear to be a valid email address. Please provide a valid email, such as name@example.com."
+                        state["current_field"] = k
+                        return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript, state=state)
+                    v = clean_email
+                elif ftype in ("phone", "tel") or any(w in k.lower() for w in ["phone", "mobile"]):
+                    digits = re.sub(r"[^\d]", "", normalize_spoken_identifier(val_str))
+                    if len(digits) < 7 or len(digits) > 15:
+                        needs_review[k] = f"Invalid phone number: '{v}'"
+                        resp = f"'{v}' does not appear to be a valid phone number. Please provide a valid phone number."
+                        state["current_field"] = k
+                        return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript, state=state)
+                    v = digits
+                elif ftype == "number":
+                    try:
+                        v = float(val_str) if "." in val_str else int(val_str)
+                    except (ValueError, TypeError):
+                        needs_review[k] = f"Invalid number: '{v}'"
+                        resp = f"'{v}' is not a valid number for {flbl}. Please provide a numeric value."
+                        state["current_field"] = k
+                        return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript, state=state)
+                elif ftype == "date":
+                    parsed_d = parse_spoken_date(val_str)
+                    if parsed_d:
+                        v = parsed_d
+                    elif not re.match(r"^\d{4}-\d{2}-\d{2}$", val_str):
+                        needs_review[k] = f"Invalid date: '{v}'"
+                        resp = f"'{v}' does not appear to be a valid date. Please provide a date like 20 October 2026."
+                        state["current_field"] = k
+                        return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript, state=state)
 
-                # Overwrite protection
-                is_correction = any(w in text_lower for w in ["change", "replace", "correct", "update", "wrong", "instead"])
-                if k in confirmed_fields and not is_correction:
+                # Overwrite protection / update handling
+                is_field_corr = is_user_correction or (k in confirmed_fields)
+                if k in confirmed_fields and not is_field_corr:
                     needs_review[k] = f"New value '{v}' proposed for already confirmed field."
                 else:
+                    if values.get(k) != v or k not in confirmed_fields:
+                        newly_filled.append(k)
                     values[k] = v
                     confirmed_fields.add(k)
-                    newly_filled.append(k)
                     needs_review.pop(k, None)
+                    state["last_modified_field"] = k
 
-        # 5. Generate next conversational step & follow-up question
+        # 7. Generate next conversational step & follow-up question
         next_missing = self._find_next_missing_field(fields, values, confirmed_fields)
         state["current_field"] = next_missing.get("name") if next_missing else None
 
         if newly_filled:
-            field_labels = [f.get("label") for f in fields if f.get("name") in newly_filled]
-            ack = f"Got your {', '.join(field_labels)}."
+            field_labels = [f.get("label", f.get("name")) for f in fields if f.get("name") in newly_filled]
+            if is_user_correction or any(k in confirmed_fields for k in newly_filled):
+                if len(newly_filled) == 1:
+                    fname = newly_filled[0]
+                    ack = f"Updated your {field_labels[0]} to {values.get(fname)}."
+                else:
+                    ack = f"Updated your {', '.join(field_labels)}."
+            else:
+                ack = f"Got your {', '.join(field_labels)}."
+
             if next_missing:
                 assistant_reply = f"{ack} What is your {next_missing.get('label')}?"
+                state["stage"] = "filling"
             else:
-                if any(w in text_lower for w in ["submit", "send it", "finish"]):
-                    return self._execute_submission(
-                        session=session,
-                        db=db,
-                        form=form,
-                        values=values,
-                        confirmed_fields=confirmed_fields,
-                        needs_review=needs_review,
-                        fields=fields,
-                        history=history,
-                        transcript=transcript,
-                        newly_filled=newly_filled
-                    )
                 summary_items = [
                     f"{f.get('label', f.get('name'))}: {values.get(f.get('name'))}"
                     for f in fields if f.get('name') in values and values.get(f.get('name'))
@@ -281,19 +443,50 @@ class ConversationManager:
                         ftype = target_field.get("type", "text")
                         is_ident = is_identifier_field(target_field)
                         options = target_field.get("options") or []
+                        val_str = str(v).strip()
 
-                        if is_ident:
-                            v = normalize_spoken_identifier(str(v))
+                        if is_name_field(target_field):
+                            if not is_valid_name(val_str):
+                                needs_review[k] = f"'{v}' does not appear to be a valid name."
+                                assistant_reply = f"'{v}' does not appear to be a valid name. Please provide your full name."
+                                state["current_field"] = k
+                                continue
+                            v = val_str
+                        elif is_ident:
+                            v = normalize_spoken_identifier(val_str)
                         elif ftype in ("select", "radio") and options:
-                            matched_opt, is_ambig = match_dropdown_option(str(v), options)
+                            matched_opt, is_ambig = match_dropdown_option(val_str, options)
                             if matched_opt:
                                 v = matched_opt
                             else:
                                 needs_review[k] = f"'{v}' is not a valid option for {target_field.get('label')}."
                                 continue
+                        elif ftype == "email":
+                            clean_email = val_str.replace(" at the rate ", "@").replace(" at ", "@").replace(" dot ", ".").replace(" ", "").strip(",.;:")
+                            if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", clean_email):
+                                needs_review[k] = f"'{v}' does not appear to be a valid email."
+                                assistant_reply = f"'{v}' does not appear to be a valid email. Please provide a valid email address."
+                                state["current_field"] = k
+                                continue
+                            v = clean_email
+                        elif ftype in ("phone", "tel") or any(w in k.lower() for w in ["phone", "mobile"]):
+                            digits = re.sub(r"[^\d]", "", normalize_spoken_identifier(val_str))
+                            if len(digits) < 7 or len(digits) > 15:
+                                needs_review[k] = f"'{v}' is not a valid phone number."
+                                assistant_reply = f"'{v}' does not appear to be a valid phone number. Please provide a valid phone number."
+                                state["current_field"] = k
+                                continue
+                            v = digits
+                        elif ftype == "date":
+                            parsed_d = parse_spoken_date(val_str)
+                            if parsed_d:
+                                v = parsed_d
+                            elif not re.match(r"^\d{4}-\d{2}-\d{2}$", val_str):
+                                needs_review[k] = f"'{v}' is not a valid date."
+                                continue
                         elif ftype == "number":
                             try:
-                                v = float(v) if "." in str(v) else int(v)
+                                v = float(val_str) if "." in val_str else int(val_str)
                             except (ValueError, TypeError):
                                 needs_review[k] = f"'{v}' is not a valid number."
                                 continue
@@ -302,12 +495,15 @@ class ConversationManager:
                         if k in confirmed_fields and not is_correction:
                             needs_review[k] = f"New value '{v}' proposed for already confirmed field."
                         else:
+                            if values.get(k) != v or k not in confirmed_fields:
+                                newly_filled.append(k)
                             values[k] = v
                             confirmed_fields.add(k)
-                            newly_filled.append(k)
                             needs_review.pop(k, None)
+                            state["last_modified_field"] = k
 
-                    assistant_reply = ai_turn.get("assistant_response") or ""
+                    if not assistant_reply:
+                        assistant_reply = ai_turn.get("assistant_response") or ""
                 except Exception as e:
                     logger.warning(f"Groq turn fallback: {e}")
 
@@ -315,7 +511,7 @@ class ConversationManager:
                 if next_missing:
                     assistant_reply = f"I didn't quite catch that. Could you tell me your {next_missing.get('label')}?"
                 else:
-                    assistant_reply = "All required fields are completed! Would you like to submit the form now?"
+                    assistant_reply = "All required fields are completed! Would you like to confirm and submit the form now?"
                     state["stage"] = "confirming_submission"
 
         return self._build_response(
@@ -329,7 +525,8 @@ class ConversationManager:
             stage=state.get("stage", "filling"),
             history=history,
             user_transcript=transcript,
-            newly_filled=newly_filled
+            newly_filled=newly_filled,
+            state=state,
         )
 
     def _find_next_missing_field(
@@ -394,6 +591,7 @@ class ConversationManager:
         newly_filled: Optional[List[str]] = None,
         is_submitted: bool = False,
         submission_id: Optional[int] = None,
+        state: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         # Missing required list
         missing = [
@@ -405,12 +603,15 @@ class ConversationManager:
         if len(history) > 20:
             history = history[-20:]
 
+        curr_state = state or {}
         session.state_json = {
             "values": values,
             "confirmed_fields": list(confirmed_fields),
             "needs_review": needs_review,
             "history": history,
             "stage": stage,
+            "last_modified_field": curr_state.get("last_modified_field"),
+            "current_field": curr_state.get("current_field"),
         }
         db.commit()
 
@@ -426,7 +627,51 @@ class ConversationManager:
             "is_completed": len(missing) == 0,
             "is_submitted": is_submitted,
             "submission_id": submission_id,
+            "last_modified_field": curr_state.get("last_modified_field"),
+            "current_field": curr_state.get("current_field"),
         }
+
+    def _detect_field_inquiry(self, text_lower: str, fields: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        cleaned = text_lower.strip()
+        # If it's an explicit command or assignment, it's not an inquiry
+        if any(cmd in cleaned for cmd in [
+            "change my ", "change the ", "change it to", "replace my ", "replace the ",
+            "update my ", "update the ", "set my ", "set the ", "my email is", "my name is",
+            "my phone is", "my department is", "my date of birth is", "my dob is", "my gender is"
+        ]):
+            return None
+
+        is_q = (
+            cleaned.endswith("?")
+            or bool(re.search(r"^(does|do|is|are|was|were|can|could|would|should|how|what|why|did|has|have|check|verify|tell me)\b", cleaned))
+            or any(p in cleaned for p in ["feel like", "feels like", "look like", "looks like", "sound like", "is valid", "valid or not", "is correct", "correct or not", "like a name"])
+        )
+        if not is_q:
+            return None
+
+        for f in fields:
+            fname = f.get("name")
+            flabel = f.get("label", fname)
+            aliases = [flabel.lower(), fname.lower().replace("_", " ")]
+            if "name" in fname:
+                aliases.extend(["name", "full name"])
+            if "email" in fname:
+                aliases.extend(["email", "email address", "mail id"])
+            if "phone" in fname or "mobile" in fname:
+                aliases.extend(["phone", "phone number", "mobile", "mobile number"])
+            if "dept" in fname or "department" in fname:
+                aliases.extend(["department", "dept", "branch", "stream"])
+            if "birth" in fname or "dob" in fname or "date" in fname:
+                aliases.extend(["date of birth", "dob", "birthday", "date"])
+            if "reg" in fname:
+                aliases.extend(["register number", "registration number", "reg no"])
+            if "gender" in fname:
+                aliases.extend(["gender", "sex"])
+
+            for alias in sorted(aliases, key=len, reverse=True):
+                if re.search(rf"\b{re.escape(alias)}\b", cleaned):
+                    return f
+        return None
 
     def _is_submission_confirmation(self, text_lower: str, current_stage: Optional[str]) -> bool:
         cleaned = text_lower.strip().lower()

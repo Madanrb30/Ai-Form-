@@ -45,14 +45,14 @@ export default function VoiceAssistantPage({ formId, setView }) {
   const [_missingFields, setMissingFields] = useState([]);
   const [needsReviewFields, setNeedsReviewFields] = useState({});
 
-  // Voice Interaction State (6 explicit states):
-  // 'ready' | 'listening' | 'processing' | 'speaking' | 'paused' | 'error'
-  const [voiceState, setVoiceState] = useState("ready");
-  const [statusMessage, setStatusMessage] = useState("Assistant ready. Click Start Voice Session or the microphone to speak.");
+  // Voice Interaction State (10 explicit states for ChatGPT Voice Mode):
+  // 'idle' | 'initializing' | 'listening' | 'recording' | 'transcribing' | 'processing' | 'speaking' | 'confirmation' | 'error' | 'stopped'
+  const [voiceState, setVoiceState] = useState("idle");
+  const [statusMessage, setStatusMessage] = useState("Assistant ready. Click 'Start Voice Assistant' to begin natural conversation.");
   const [conversation, setConversation] = useState([
     {
       role: "assistant",
-      text: "I'm ready to help you fill this form. You can start speaking now.",
+      text: "I'm ready to help you fill this form. Click 'Start Voice Assistant' to begin.",
       meta: "Ready",
     },
   ]);
@@ -74,6 +74,7 @@ export default function VoiceAssistantPage({ formId, setView }) {
 
   const isMountedRef = useRef(true);
   const isSubmittedRef = useRef(false);
+  const isStoppedRef = useRef(false);
   const isProcessingTurnRef = useRef(false);
 
   // Cloud Audio Recording & Speech Recognition Hook (Groq Whisper-large-v3-turbo)
@@ -155,16 +156,18 @@ export default function VoiceAssistantPage({ formId, setView }) {
 
   // Synchronize Voice Recognition & Cloud Whisper State
   useEffect(() => {
+    if (isStoppedRef.current || isSubmittedRef.current) return;
+
     if (speechError) {
       const isNoSpeech =
         speechError.toLowerCase().includes("no speech was detected") ||
         speechError.toLowerCase().includes("no speech detected");
 
-      if (isNoSpeech && continuousModeRef.current && voiceStateRef.current !== "paused" && !isSubmittedRef.current) {
+      if (isNoSpeech && continuousModeRef.current && voiceStateRef.current !== "stopped" && !isSubmittedRef.current) {
         setStatusMessage("No speech detected. Listening for your response...");
         setVoiceState("listening");
         const timer = setTimeout(() => {
-          if (isMountedRef.current && continuousModeRef.current && voiceStateRef.current !== "paused" && !isSubmittedRef.current) {
+          if (isMountedRef.current && continuousModeRef.current && !isStoppedRef.current && voiceStateRef.current !== "stopped" && !isSubmittedRef.current) {
             startListening({ autoStopOnSilence: true, silenceDuration: 1800 });
           }
         }, 800);
@@ -174,13 +177,13 @@ export default function VoiceAssistantPage({ formId, setView }) {
         setStatusMessage(speechError);
       }
     } else if (isTranscribing) {
-      setVoiceState("processing");
-      setStatusMessage("Transcribing audio via Groq Whisper cloud STT...");
+      setVoiceState("transcribing");
+      setStatusMessage("Transcribing audio via STT provider...");
     } else if (isRecording) {
-      setVoiceState("listening");
+      setVoiceState("recording");
       setStatusMessage(
         continuousMode
-          ? `Listening (Continuous Mode)... (${recordingTimeFormatted}). Speak your response.`
+          ? `Listening & recording... (${recordingTimeFormatted}). Speak your response.`
           : `Recording audio... (${recordingTimeFormatted}). Speak clearly, then click Stop.`
       );
     }
@@ -188,14 +191,14 @@ export default function VoiceAssistantPage({ formId, setView }) {
 
   // Resume listening in Continuous Conversation mode
   const resumeContinuousListening = useCallback(() => {
-    if (!isMountedRef.current || isSubmittedRef.current) return;
-    if (continuousModeRef.current && voiceStateRef.current !== "paused") {
+    if (!isMountedRef.current || isSubmittedRef.current || isStoppedRef.current) return;
+    if (continuousModeRef.current && voiceStateRef.current !== "stopped") {
       setVoiceState("listening");
       setStatusMessage("Listening... Speak your next detail or answer.");
       startListening({ autoStopOnSilence: true, silenceDuration: 1800 });
     } else {
-      setVoiceState("ready");
-      setStatusMessage("Assistant ready. Click the microphone to speak.");
+      setVoiceState("idle");
+      setStatusMessage("Assistant ready. Click 'Start Voice Assistant' or the microphone to speak.");
     }
   }, [startListening]);
 
@@ -278,10 +281,11 @@ export default function VoiceAssistantPage({ formId, setView }) {
         if (turnRes.is_submitted || turnRes.submission_id) {
           // Form successfully submitted by the conversational agent!
           isSubmittedRef.current = true;
+          isStoppedRef.current = true;
           ttsService.stop();
           cancelListening();
           storageService.deleteDraft(formId, user?.id);
-          setVoiceState("ready");
+          setVoiceState("confirmation");
           setStatusMessage("Form submitted successfully!");
           toast("Form response submitted successfully!", "success");
 
@@ -330,29 +334,42 @@ export default function VoiceAssistantPage({ formId, setView }) {
         ]);
 
         if (turnRes.is_completed) {
+          setVoiceState("confirmation");
           toast("All required fields are completed! Speak 'confirm' or click to submit.", "success");
         }
 
         // Assistant Speaking & Continuous Audio Resumption
         if (ttsEnabled) {
-          setVoiceState("speaking");
+          if (!turnRes.is_completed) {
+            setVoiceState("speaking");
+          }
           setStatusMessage("Assistant speaking response...");
           ttsService.speak(assistantReply, {
             onStart: () => {
-              if (isMountedRef.current) setVoiceState("speaking");
+              if (isMountedRef.current && !isStoppedRef.current) {
+                if (!turnRes.is_completed) setVoiceState("speaking");
+              }
             },
             onEnd: () => {
-              resumeContinuousListening();
+              if (isMountedRef.current && !isStoppedRef.current) {
+                resumeContinuousListening();
+              }
             },
             onError: () => {
-              resumeContinuousListening();
+              if (isMountedRef.current && !isStoppedRef.current) {
+                resumeContinuousListening();
+              }
             },
           });
         } else {
-          setVoiceState("speaking");
+          if (!turnRes.is_completed) {
+            setVoiceState("speaking");
+          }
           setStatusMessage("Assistant response displayed.");
           setTimeout(() => {
-            resumeContinuousListening();
+            if (isMountedRef.current && !isStoppedRef.current) {
+              resumeContinuousListening();
+            }
           }, 1200);
         }
       } catch (err) {
@@ -375,55 +392,104 @@ export default function VoiceAssistantPage({ formId, setView }) {
     }
   }, [isListening, isTranscribing, transcript, processTranscript]);
 
-  // Voice Interaction Control Handlers
-  const handleStartSession = () => {
-    if (voiceState === "processing") return;
+  // Voice Interaction Control Handlers for Continuous ChatGPT-like Voice Mode
+  const handleStartSession = useCallback(() => {
+    if (voiceStateRef.current === "processing" || voiceStateRef.current === "initializing") return;
     if (!isSupported) {
       toast("Audio recording is not supported in this browser environment. Please use manual input below.", "error");
       return;
     }
-    setVoiceState("listening");
-    setStatusMessage(
-      continuousMode
-        ? "Listening (Continuous Mode active)... Speak your answer."
-        : "Listening... Speak clearly."
+
+    isStoppedRef.current = false;
+    continuousModeRef.current = true;
+    if (!continuousMode) setContinuousMode(true);
+    setVoiceState("initializing");
+    setStatusMessage("Initializing voice session...");
+
+    // Find the first unfilled required field (or first unfilled field) to guide the user naturally
+    const fieldsList = form?.schema_json?.fields || [];
+    const firstMissing = fieldsList.find(
+      (f) => f.required && (!values[f.name] || String(values[f.name]).trim() === "")
+    ) || fieldsList.find(
+      (f) => !values[f.name] || String(values[f.name]).trim() === ""
     );
-    startListening({ autoStopOnSilence: continuousMode, silenceDuration: 1800 });
-  };
 
-  const handlePauseSession = () => {
-    ttsService.stop();
-    cancelListening();
-    setVoiceState("paused");
-    setStatusMessage("Continuous conversation paused. Click Resume to continue.");
-  };
+    const greetingText = firstMissing
+      ? `Hello! I am ready to help you fill out the ${form?.title || "form"}. What is your ${firstMissing.label || firstMissing.name}?`
+      : `Hello! I am ready to help you fill out the ${form?.title || "form"}. You can start speaking your details.`;
 
-  const handleResumeSession = () => {
-    setVoiceState("listening");
-    setStatusMessage("Resumed continuous session. Listening...");
-    startListening({ autoStopOnSilence: true, silenceDuration: 1800 });
-  };
+    setConversation((prev) => [
+      ...prev,
+      {
+        role: "assistant",
+        text: greetingText,
+        meta: "Voice Session Started",
+      },
+    ]);
 
-  const handleStopSession = () => {
-    ttsService.stop();
-    cancelListening();
-    setVoiceState("ready");
-    setStatusMessage("Voice session stopped. Click Start Voice Session to speak.");
-  };
-
-  const handleToggleListening = () => {
-    if (voiceState === "processing") return;
-    if (voiceState === "listening" || isRecording || isListening) {
-      stopListening();
-    } else if (voiceState === "speaking") {
-      ttsService.stop();
-      resumeContinuousListening();
-    } else if (voiceState === "paused") {
-      handleResumeSession();
+    if (ttsEnabled) {
+      setVoiceState("speaking");
+      setStatusMessage("Assistant speaking greeting...");
+      ttsService.speak(greetingText, {
+        onStart: () => {
+          if (isMountedRef.current && !isStoppedRef.current) {
+            setVoiceState("speaking");
+          }
+        },
+        onEnd: () => {
+          if (isMountedRef.current && !isStoppedRef.current) {
+            setVoiceState("listening");
+            setStatusMessage("Listening... Speak your response.");
+            startListening({ autoStopOnSilence: true, silenceDuration: 1800 });
+          }
+        },
+        onError: () => {
+          if (isMountedRef.current && !isStoppedRef.current) {
+            setVoiceState("listening");
+            setStatusMessage("Listening... Speak your response.");
+            startListening({ autoStopOnSilence: true, silenceDuration: 1800 });
+          }
+        },
+      });
     } else {
+      setVoiceState("listening");
+      setStatusMessage("Listening... Speak your response.");
+      startListening({ autoStopOnSilence: true, silenceDuration: 1800 });
+    }
+  }, [form, values, isSupported, toast, ttsEnabled, startListening]);
+
+  const handleStopSession = useCallback(() => {
+    isStoppedRef.current = true;
+    ttsService.stop();
+    cancelListening();
+    setVoiceState("stopped");
+    setStatusMessage("Voice session stopped. Click 'Start Voice Assistant' to resume.");
+  }, [cancelListening]);
+
+  const handleToggleListening = useCallback(() => {
+    if (voiceStateRef.current === "processing" || voiceStateRef.current === "initializing") return;
+
+    if (voiceStateRef.current === "speaking") {
+      // User interruption: immediately interrupt assistant speech and begin listening
+      ttsService.stop();
+      isStoppedRef.current = false;
+      setVoiceState("listening");
+      setStatusMessage("Interrupted. Listening to you...");
+      startListening({ autoStopOnSilence: true, silenceDuration: 1800 });
+    } else if (voiceStateRef.current === "listening" || voiceStateRef.current === "recording" || isRecording || isListening) {
+      // User signals they are done speaking early
+      stopListening();
+    } else if (voiceStateRef.current === "confirmation") {
+      // In confirmation state, click mic to speak confirmation
+      isStoppedRef.current = false;
+      setVoiceState("listening");
+      setStatusMessage("Listening for confirmation ('confirm' or 'yes')...");
+      startListening({ autoStopOnSilence: true, silenceDuration: 1800 });
+    } else {
+      // Idle, stopped, or error: Start session
       handleStartSession();
     }
-  };
+  }, [handleStartSession, isListening, isRecording, startListening, stopListening]);
 
   const toggleContinuousMode = () => {
     const next = !continuousMode;
@@ -679,12 +745,16 @@ export default function VoiceAssistantPage({ formId, setView }) {
                   className={`text-[10px] font-mono px-2 py-0.5 rounded-full uppercase font-medium ${
                     voiceState === "listening"
                       ? "bg-red-50 text-red-700 border border-red-200 animate-pulse"
-                      : voiceState === "processing"
+                      : voiceState === "recording"
+                      ? "bg-red-100 text-red-800 border border-red-300 animate-pulse"
+                      : voiceState === "transcribing" || voiceState === "initializing"
                       ? "bg-amber-50 text-amber-700 border border-amber-200 animate-pulse"
+                      : voiceState === "processing"
+                      ? "bg-amber-100 text-amber-800 border border-amber-300 animate-pulse"
                       : voiceState === "speaking"
                       ? "bg-blue-50 text-blue-700 border border-blue-200 animate-pulse"
-                      : voiceState === "paused"
-                      ? "bg-purple-50 text-purple-700 border border-purple-200"
+                      : voiceState === "confirmation"
+                      ? "bg-emerald-50 text-emerald-700 border border-emerald-300 animate-pulse"
                       : voiceState === "error"
                       ? "bg-rose-50 text-rose-700 border border-rose-200"
                       : "bg-neutral-100 text-neutral-600 border border-neutral-200"
@@ -700,9 +770,9 @@ export default function VoiceAssistantPage({ formId, setView }) {
               <div className="bg-emerald-50/70 border border-emerald-200/80 rounded-xl px-3 py-1.5 flex items-center justify-between text-[11px] text-emerald-800">
                 <div className="flex items-center space-x-2">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
-                  <span className="font-semibold">Continuous Mode Active</span>
+                  <span className="font-semibold">Continuous Voice Active</span>
                 </div>
-                <span className="text-[10px] text-emerald-600 font-mono">Hands-free Auto-turns</span>
+                <span className="text-[10px] text-emerald-600 font-mono">ChatGPT Voice Mode</span>
               </div>
             )}
 
@@ -711,7 +781,7 @@ export default function VoiceAssistantPage({ formId, setView }) {
               <MicrophoneButton
                 state={voiceState}
                 onClick={handleToggleListening}
-                disabled={isTranscribing}
+                disabled={voiceState === "transcribing" || voiceState === "processing"}
                 size="lg"
               />
             </div>
@@ -734,7 +804,7 @@ export default function VoiceAssistantPage({ formId, setView }) {
 
             {/* Action Buttons: Multi-State Controls */}
             <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
-              {voiceState === "processing" ? (
+              {voiceState === "processing" || voiceState === "transcribing" || voiceState === "initializing" ? (
                 <>
                   <button
                     type="button"
@@ -742,7 +812,7 @@ export default function VoiceAssistantPage({ formId, setView }) {
                     className="px-4 py-1.5 bg-neutral-100 text-neutral-500 rounded-lg text-xs font-medium border border-neutral-200 flex items-center space-x-1.5 cursor-not-allowed"
                   >
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    <span>Processing Audio & AI...</span>
+                    <span>{voiceState === "transcribing" ? "Transcribing Audio..." : voiceState === "initializing" ? "Starting Voice..." : "Processing AI..."}</span>
                   </button>
                   <button
                     type="button"
@@ -753,7 +823,7 @@ export default function VoiceAssistantPage({ formId, setView }) {
                     <span>Stop</span>
                   </button>
                 </>
-              ) : voiceState === "listening" ? (
+              ) : voiceState === "listening" || voiceState === "recording" ? (
                 <>
                   <button
                     type="button"
@@ -763,16 +833,6 @@ export default function VoiceAssistantPage({ formId, setView }) {
                     <Square className="w-3 h-3 fill-current" />
                     <span>Done Speaking</span>
                   </button>
-                  {continuousMode && (
-                    <button
-                      type="button"
-                      onClick={handlePauseSession}
-                      className="px-3 py-1.5 border border-purple-200 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg text-xs font-medium transition-colors cursor-pointer flex items-center space-x-1"
-                    >
-                      <Pause className="w-3.5 h-3.5" />
-                      <span>Pause</span>
-                    </button>
-                  )}
                   <button
                     type="button"
                     onClick={handleStopSession}
@@ -790,25 +850,15 @@ export default function VoiceAssistantPage({ formId, setView }) {
                       ttsService.stop();
                       if (continuousModeRef.current) resumeContinuousListening();
                       else {
-                        setVoiceState("ready");
+                        setVoiceState("idle");
                         setStatusMessage("Assistant ready.");
                       }
                     }}
-                    className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium transition-colors cursor-pointer flex items-center space-x-1.5 shadow-xs"
+                    className="px-4 py-1.5 bg-neutral-900 hover:bg-neutral-800 text-white rounded-lg text-xs font-medium transition-colors cursor-pointer flex items-center space-x-1.5 shadow-xs"
                   >
                     <FastForward className="w-3.5 h-3.5" />
-                    <span>Skip Audio</span>
+                    <span>Interrupt / Speak</span>
                   </button>
-                  {continuousMode && (
-                    <button
-                      type="button"
-                      onClick={handlePauseSession}
-                      className="px-3 py-1.5 border border-purple-200 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg text-xs font-medium transition-colors cursor-pointer flex items-center space-x-1"
-                    >
-                      <Pause className="w-3.5 h-3.5" />
-                      <span>Pause</span>
-                    </button>
-                  )}
                   <button
                     type="button"
                     onClick={handleStopSession}
@@ -818,15 +868,23 @@ export default function VoiceAssistantPage({ formId, setView }) {
                     <span>Stop</span>
                   </button>
                 </>
-              ) : voiceState === "paused" ? (
+              ) : voiceState === "confirmation" ? (
                 <>
                   <button
                     type="button"
-                    onClick={handleResumeSession}
-                    className="px-4 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-medium transition-colors cursor-pointer flex items-center space-x-1.5 shadow-xs"
+                    onClick={() => processTranscript("confirm submission")}
+                    className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-medium transition-colors cursor-pointer flex items-center space-x-1.5 shadow-xs"
                   >
-                    <Play className="w-3.5 h-3.5 fill-current" />
-                    <span>Resume Listening</span>
+                    <Send className="w-3.5 h-3.5" />
+                    <span>Confirm & Submit</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleToggleListening}
+                    className="px-3 py-1.5 border border-neutral-300 hover:bg-neutral-50 text-neutral-700 rounded-lg text-xs font-medium transition-colors cursor-pointer flex items-center space-x-1"
+                  >
+                    <Mic className="w-3.5 h-3.5" />
+                    <span>Speak Answer</span>
                   </button>
                   <button
                     type="button"
@@ -834,7 +892,7 @@ export default function VoiceAssistantPage({ formId, setView }) {
                     className="px-3 py-1.5 border border-[#E5E5E5] hover:bg-neutral-50 text-neutral-600 rounded-lg text-xs transition-colors cursor-pointer flex items-center space-x-1"
                   >
                     <Square className="w-3 h-3 fill-current" />
-                    <span>Stop Session</span>
+                    <span>Stop</span>
                   </button>
                 </>
               ) : voiceState === "error" ? (
@@ -853,7 +911,7 @@ export default function VoiceAssistantPage({ formId, setView }) {
                     className="px-3 py-1.5 border border-[#E5E5E5] hover:bg-neutral-50 text-neutral-600 rounded-lg text-xs transition-colors cursor-pointer flex items-center space-x-1"
                   >
                     <Square className="w-3 h-3 fill-current" />
-                    <span>Reset to Ready</span>
+                    <span>Reset to Idle</span>
                   </button>
                 </>
               ) : (
@@ -863,7 +921,7 @@ export default function VoiceAssistantPage({ formId, setView }) {
                   className="px-4 py-1.5 bg-[#111111] text-white rounded-lg text-xs font-medium hover:bg-neutral-800 transition-colors cursor-pointer flex items-center space-x-1.5 shadow-xs"
                 >
                   <Mic className="w-3.5 h-3.5" />
-                  <span>{continuousMode ? "Start Continuous Session" : "Start Speaking"}</span>
+                  <span>Start Voice Assistant</span>
                 </button>
               )}
 
@@ -878,8 +936,8 @@ export default function VoiceAssistantPage({ formId, setView }) {
                       meta: "Reset",
                     },
                   ]);
-                  setVoiceState("ready");
-                  setStatusMessage("Conversation reset. Assistant ready.");
+                  setVoiceState("idle");
+                  setStatusMessage("Conversation reset. Assistant ready. Click 'Start Voice Assistant' to begin.");
                 }}
                 className="px-3 py-1.5 border border-[#E5E5E5] hover:bg-neutral-50 text-neutral-600 rounded-lg text-xs transition-colors cursor-pointer"
               >

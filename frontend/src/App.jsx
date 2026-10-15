@@ -15,15 +15,52 @@ import AdminDashboardPage from "./pages/AdminDashboardPage";
 import SuperAdminDashboardPage from "./pages/SuperAdminDashboardPage";
 
 function MainApp() {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, loading, role, isAdmin, isSuperAdmin } = useAuth();
   const [currentView, setView] = useState(() => ({
     name: "dashboard",
   }));
   const [searchQuery, setSearchQuery] = useState("");
 
+  // Show clean minimal spinner during startup token verification
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-white flex flex-col items-center justify-center p-4">
+        <div className="w-8 h-8 border-2 border-neutral-900 border-t-transparent rounded-full animate-spin" />
+        <p className="text-xs text-neutral-500 font-mono mt-3">Verifying session...</p>
+      </div>
+    );
+  }
+
   // If user is not authenticated or explicitly at login screen
   if (!isAuthenticated || currentView.name === "login") {
     return <LoginPage setView={setView} />;
+  }
+
+  // Protected route role guards: non-admins cannot access admin / super-admin consoles
+  if (currentView.name === "super-admin" && !isSuperAdmin) {
+    return (
+      <AppLayout
+        currentView={{ name: isAdmin ? "admin" : "dashboard" }}
+        setView={setView}
+        searchQuery={searchQuery}
+        setSearchQuery={setSearchQuery}
+      >
+        <DashboardPage setView={setView} searchQuery={searchQuery} setSearchQuery={setSearchQuery} />
+      </AppLayout>
+    );
+  }
+
+  if (currentView.name === "admin" && !isAdmin) {
+    return (
+      <AppLayout
+        currentView={{ name: "dashboard" }}
+        setView={setView}
+        searchQuery={searchQuery}
+        setSearchQuery={setSearchQuery}
+      >
+        <DashboardPage setView={setView} searchQuery={searchQuery} setSearchQuery={setSearchQuery} />
+      </AppLayout>
+    );
   }
 
   return (

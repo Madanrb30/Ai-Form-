@@ -1,18 +1,18 @@
 import React from "react";
-import { Mic, Square, Loader2, Volume2, Pause, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { Mic, Square, Loader2, Volume2, AlertTriangle, CheckCircle2, ShieldAlert } from "lucide-react";
 
 export default function MicrophoneButton({
-  state = "ready", // 'ready' | 'listening' | 'processing' | 'speaking' | 'paused' | 'error' | 'completed'
+  state = "idle", // 'idle' | 'initializing' | 'listening' | 'recording' | 'transcribing' | 'processing' | 'speaking' | 'confirmation' | 'error' | 'stopped'
   onClick,
   disabled = false,
   size = "lg", // 'md' | 'lg'
 }) {
   const isListening = state === "listening";
-  const isProcessing = ["transcribing", "processing", "filling"].includes(state);
+  const isRecording = state === "recording";
+  const isProcessing = ["initializing", "transcribing", "processing"].includes(state);
   const isSpeaking = state === "speaking";
-  const isPaused = state === "paused";
+  const isConfirmation = state === "confirmation";
   const isError = state === "error";
-  const isCompleted = state === "completed";
 
   const sizeClasses =
     size === "lg"
@@ -21,40 +21,50 @@ export default function MicrophoneButton({
 
   const iconSize = size === "lg" ? "w-8 h-8" : "w-6 h-6";
 
-  // Color & shadow styles per state
-  let buttonStyle = "bg-[#111111] text-white hover:bg-neutral-800 border-neutral-700 shadow-md";
-  if (isListening) {
-    buttonStyle = "bg-neutral-900 text-white border-neutral-900 shadow-xl ring-4 ring-neutral-400/40";
+  // Black-and-white aesthetic with crisp status borders
+  let buttonStyle = "bg-neutral-900 text-white hover:bg-neutral-800 border-neutral-700 shadow-md";
+  if (isRecording) {
+    buttonStyle = "bg-black text-white border-neutral-900 shadow-xl ring-4 ring-neutral-400/50";
+  } else if (isListening) {
+    buttonStyle = "bg-neutral-900 text-white border-neutral-700 shadow-lg ring-2 ring-neutral-500/30";
   } else if (isProcessing) {
     buttonStyle = "bg-neutral-900 text-white border-neutral-800 shadow-md";
   } else if (isSpeaking) {
-    buttonStyle = "bg-neutral-900 text-emerald-400 border-emerald-500 shadow-lg ring-4 ring-emerald-400/30";
-  } else if (isPaused) {
-    buttonStyle = "bg-amber-600 text-white hover:bg-amber-700 border-amber-500 shadow-md";
+    buttonStyle = "bg-black text-white border-neutral-600 shadow-lg ring-4 ring-neutral-300/40";
+  } else if (isConfirmation) {
+    buttonStyle = "bg-black text-white border-neutral-500 shadow-xl ring-4 ring-neutral-400/60";
   } else if (isError) {
-    buttonStyle = "bg-red-600 text-white hover:bg-red-700 border-red-500 shadow-md";
-  } else if (isCompleted) {
-    buttonStyle = "bg-emerald-600 text-white hover:bg-emerald-700 border-emerald-500 shadow-md";
+    buttonStyle = "bg-neutral-900 text-neutral-300 border-neutral-700 shadow-md";
   }
 
   return (
     <div className="relative inline-flex items-center justify-center">
-      {/* Outer pulsing ring when listening */}
-      {isListening && (
+      {/* Outer pulsing ring when recording voice activity */}
+      {isRecording && (
         <>
-          <span className="absolute -inset-3 rounded-full bg-neutral-900/10 animate-ping opacity-75 pointer-events-none" />
-          <span className="absolute -inset-1.5 rounded-full bg-neutral-900/20 animate-pulse pointer-events-none" />
+          <span className="absolute -inset-3 rounded-full bg-neutral-900/15 animate-ping opacity-75 pointer-events-none" />
+          <span className="absolute -inset-1.5 rounded-full bg-neutral-900/25 animate-pulse pointer-events-none" />
         </>
+      )}
+
+      {/* Gentle listening indicator */}
+      {isListening && (
+        <span className="absolute -inset-1.5 rounded-full border border-neutral-400/40 animate-pulse pointer-events-none" />
       )}
 
       {/* Speaking wave effect */}
       {isSpeaking && (
-        <span className="absolute -inset-2 rounded-full border-2 border-emerald-500/40 animate-pulse pointer-events-none" />
+        <span className="absolute -inset-2 rounded-full border-2 border-neutral-400/40 animate-pulse pointer-events-none" />
+      )}
+
+      {/* Confirmation highlight ring */}
+      {isConfirmation && (
+        <span className="absolute -inset-2.5 rounded-full border-2 border-dashed border-neutral-600 animate-spin pointer-events-none" />
       )}
 
       {/* Processing spinner ring */}
       {isProcessing && (
-        <span className="absolute -inset-1 rounded-full border-2 border-dashed border-neutral-900 animate-spin pointer-events-none" />
+        <span className="absolute -inset-1.5 rounded-full border-2 border-dashed border-neutral-700 animate-spin pointer-events-none" />
       )}
 
       <button
@@ -62,25 +72,27 @@ export default function MicrophoneButton({
         disabled={disabled}
         onClick={onClick}
         aria-label={
-          isListening
+          isRecording || isListening
             ? "Stop listening"
             : isSpeaking
-            ? "Speaking"
-            : isPaused
-            ? "Resume voice session"
-            : "Start speaking"
+            ? "Interrupt assistant"
+            : isConfirmation
+            ? "Confirm or speak answer"
+            : isProcessing
+            ? "Processing"
+            : "Start voice assistant"
         }
         className={`relative rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed select-none focus:outline-none focus:ring-4 focus:ring-neutral-400/50 ${sizeClasses} ${buttonStyle}`}
       >
-        {isListening ? (
+        {isRecording ? (
           <Square className={`${iconSize} fill-current`} />
+        ) : isListening ? (
+          <Mic className={`${iconSize} animate-pulse`} />
         ) : isProcessing ? (
           <Loader2 className={`${iconSize} animate-spin`} />
         ) : isSpeaking ? (
           <Volume2 className={`${iconSize} animate-pulse`} />
-        ) : isPaused ? (
-          <Pause className={iconSize} />
-        ) : isCompleted ? (
+        ) : isConfirmation ? (
           <CheckCircle2 className={iconSize} />
         ) : isError ? (
           <AlertTriangle className={iconSize} />

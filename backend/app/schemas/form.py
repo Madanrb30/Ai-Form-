@@ -103,6 +103,75 @@ def is_identifier_field(field: Any) -> bool:
     return any(k in tokens for k in IDENTIFIER_KEYWORDS)
 
 
+def is_name_field(field: Any) -> bool:
+    """Helper to detect if a field represents a person's name."""
+    if isinstance(field, dict):
+        name = str(field.get("name", "")).lower()
+        label = str(field.get("label", "")).lower()
+    else:
+        name = str(getattr(field, "name", "")).lower()
+        label = str(getattr(field, "label", "")).lower()
+
+    if any(n in name for n in ["full_name", "first_name", "last_name", "candidate_name", "student_name", "applicant_name", "user_name"]):
+        return True
+    if name == "name" or label == "name":
+        return True
+    if "name" in name.split("_") or "name" in label.split():
+        excluded = ["file", "form", "dept", "department", "company", "college", "school", "org", "organization"]
+        if not any(ex in name or ex in label for ex in excluded):
+            return True
+    return False
+
+
+def is_valid_name(val: Any) -> bool:
+    """
+    Validates whether a string is a genuine personal name.
+    Rejects questions, conversational inquiries, sentences, and non-name phrases.
+    """
+    if not val or not isinstance(val, str) or not val.strip():
+        return False
+    v = val.strip().lower()
+
+    if "?" in val:
+        return False
+
+    question_phrases = [
+        "feel like", "feels like", "look like", "looks like", "sound like", "sounds like",
+        "like a name", "is valid", "valid or not", "what is", "how is", "is correct",
+        "correct or not", "tell me", "check my", "verify my", "does my", "is my",
+        "my name", "the name", "a name", "change my", "replace my", "update my", "set my"
+    ]
+    if any(phrase in v for phrase in question_phrases):
+        return False
+
+    if any(v.startswith(p) for p in ["does ", "do ", "is ", "are ", "can ", "could ", "what ", "how ", "why ", "did ", "change ", "replace ", "update ", "set "]):
+        return False
+
+    command_words = {"change", "replace", "update", "set", "wrong", "incorrect", "instead", "cancel", "stop"}
+    if any(w in command_words for w in re.split(r"\s+", v)):
+        return False
+
+    conversational_non_names = {
+        "yes", "no", "ok", "okay", "sure", "cancel", "stop", "wait", "hold on",
+        "wrong", "incorrect", "a name", "my name", "the name", "name",
+        "unknown", "none", "nothing", "skip", "repeat", "fine", "good"
+    }
+    if v in conversational_non_names:
+        return False
+
+    cleaned_chars = re.sub(r"[\s\.\'\-]", "", val)
+    if len(cleaned_chars) < 2:
+        return False
+
+    if not re.match(r"^[\w\s\.\'\-]+$", val, re.UNICODE):
+        return False
+
+    if not any(c.isalpha() for c in val):
+        return False
+
+    return True
+
+
 
 class FormSchemaDefinition(BaseModel):
     title: str = Field(..., min_length=1, max_length=255, description="Title of the form")

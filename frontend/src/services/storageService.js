@@ -4,8 +4,8 @@ const SETTINGS_KEY = "voxform_app_settings";
 const DEFAULT_SETTINGS = {
   language: "en-US",
   voiceSpeed: 1.0,
-  voicePlayback: false,
-  continuousMode: false,
+  voicePlayback: true,
+  continuousMode: true,
   voiceConfirmation: true,
   storeTranscripts: true,
   theme: "light",

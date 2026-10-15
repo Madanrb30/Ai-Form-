@@ -1,6 +1,6 @@
 import re
 from typing import Dict, Any, List, Optional, Tuple
-from app.schemas.form import FormSchemaDefinition, is_identifier_field
+from app.schemas.form import FormSchemaDefinition, is_identifier_field, is_name_field, is_valid_name
 
 
 MONTH_NAMES = {
@@ -313,6 +313,13 @@ def match_dropdown_option(spoken: str, options: List[str]) -> Tuple[Optional[str
                 for p in patterns:
                     if not p:
                         continue
+                    # Guard short words (e.g. 'it') from matching English pronouns in long sentences
+                    if len(p) <= 2:
+                        if cleaned_spoken == p or re.search(rf"\b(?:dept|department|branch|stream|course|in)\s+{re.escape(p)}\b|\b{re.escape(p)}\s+(?:dept|department|branch)\b", cleaned_spoken):
+                            matches.add(opt)
+                            break
+                        continue
+
                     if (
                         p == cleaned_spoken
                         or f" {p} " in f" {cleaned_spoken} "
@@ -363,6 +370,19 @@ def map_transcript_to_fields(transcript: str, schema: Dict[str, Any]) -> Dict[st
     text = transcript.strip()
     results = {}
 
+    # Guard: Questions and inquiries must never be extracted as field assignments
+    t_clean = text.strip().lower()
+    is_inquiry = (
+        t_clean.endswith("?")
+        or bool(re.search(r"^(does|do|is|are|was|were|can|could|would|should|how|what|why|did|has|have)\b", t_clean))
+        or any(p in t_clean for p in ["feel like", "feels like", "look like", "looks like", "sound like", "is valid", "valid or not", "is correct", "like a name"])
+    )
+    is_explicit_cmd = any(w in t_clean for w in [
+        "change my ", "change the ", "change it to", "replace my ", "replace the ", "update my ", "update the ", "set my ", "set the "
+    ])
+    if is_inquiry and not is_explicit_cmd:
+        return {}
+
     # Build field aliases and search tokens
     field_metadata = []
     for f in fields:
@@ -394,8 +414,8 @@ def map_transcript_to_fields(transcript: str, schema: Dict[str, Any]) -> Dict[st
             aliases.extend(["student id", "id number", "identification", "student identification"])
         if "postal" in fname or "zip" in fname or "pin" in fname:
             aliases.extend(["postal code", "zip code", "pincode", "pin code", "postal"])
-        if "birth" in fname or "dob" in fname:
-            aliases.extend(["date of birth", "dob", "birthday", "birth date"])
+        if ftype == "date" or "date" in fname or "birth" in fname or "dob" in fname or "date" in flabel.lower():
+            aliases.extend(["date", "date of birth", "dob", "birthday", "birth date"])
         if "gender" in fname:
             aliases.extend(["gender", "sex"])
         if "feedback" in fname or "comment" in fname or "message" in fname:
@@ -426,6 +446,10 @@ def map_transcript_to_fields(transcript: str, schema: Dict[str, Any]) -> Dict[st
         for alias in fmeta["aliases"]:
             pattern = rf"\b{re.escape(alias)}\b"
             for m in re.finditer(pattern, text_lower):
+                # Guard against question prefixes targeting this field, e.g. "does my name", "is my email"
+                prefix_context = text_lower[:m.start()].strip()
+                if re.search(r"\b(does|do|is|are|was|were|can|could|would|should|how|what|why|did|has|have|check|verify)\s+(?:my\s+|the\s+|this\s+)?$", prefix_context):
+                    continue
                 matches.append({
                     "start": m.start(),
                     "end": m.end(),
@@ -459,9 +483,39 @@ def map_transcript_to_fields(transcript: str, schema: Dict[str, Any]) -> Dict[st
         else:
             raw_val = text_lower[start_idx:]
 
-        # Strip connectors: "is", "are", "as", "to", "set to", ":", "=", "entered as", "and", "my", etc.
+        # Strip correction prefixes: e.g. "is wrong. change it to", "is incorrect. change it to", "replace it with", etc.
         val = raw_val.strip()
-        val = re.sub(r"^(is|are|was|to|set to|as|entered as|should be|colon|equals?|:|=)\s*", "", val, flags=re.IGNORECASE)
+        val = re.sub(
+            r"^(is|are|was)?\s*(wrong|incorrect|not right|mistake)[\s\.,;\-–]+(change|replace|update|set|switch)\s*(it\s*)?(to|with|as)\s*",
+            "",
+            val,
+            flags=re.IGNORECASE
+        )
+        val = re.sub(
+            r"^(is|are|was|to|set to|as|entered as|should be|colon|equals?|:|=)\s*",
+            "",
+            val,
+            flags=re.IGNORECASE
+        )
+        val = re.sub(
+            r"^(change|replace|update|set|switch)\s*(it\s*)?(to|with|as)\s*",
+            "",
+            val,
+            flags=re.IGNORECASE
+        )
+        val = re.sub(
+            r"^(with|to|as|into|by)\s+",
+            "",
+            val,
+            flags=re.IGNORECASE
+        )
+        # Strip negative contrast clauses: e.g. ", not Computer Science", " instead of X"
+        val = re.sub(
+            r"[\s,;\-]+(not|instead of|rather than|and not)\s+.*$",
+            "",
+            val,
+            flags=re.IGNORECASE
+        )
         val = re.sub(r"\s*(and\s+my|and\s+the|and|also|then|next)\s*$", "", val, flags=re.IGNORECASE)
         val = val.strip().strip(",.;:")
 
@@ -475,6 +529,16 @@ def map_transcript_to_fields(transcript: str, schema: Dict[str, Any]) -> Dict[st
         fmeta = curr["fmeta"]
         ftype = fmeta["type"]
         is_ident = fmeta["is_identifier"]
+
+        # Reject if the extracted value itself is a question or conversational inquiry
+        if "?" in str(orig_val) or any(phrase in str(orig_val).lower() for phrase in [
+            "feel like", "feels like", "look like", "looks like", "sound like", "like a name", "is valid", "valid or not", "is correct"
+        ]):
+            continue
+
+        if is_name_field(fmeta):
+            if not is_valid_name(orig_val):
+                continue
 
         # Type conversion & normalization
         if is_ident:
@@ -524,13 +588,14 @@ def map_transcript_to_fields(transcript: str, schema: Dict[str, Any]) -> Dict[st
             results[fmeta["name"]] = orig_val
 
     # Check for unmapped select/radio fields that may have been spoken directly without mentioning the field name
-    # e.g., "I belong to AI and Data Science."
-    for fmeta in field_metadata:
-        fname = fmeta["name"]
-        if fname not in results and fmeta["type"] in ("select", "radio"):
-            options = fmeta["options"] or []
-            matched_opt, is_ambig = match_dropdown_option(text, options)
-            if matched_opt and not is_ambig:
-                results[fname] = matched_opt
+    # e.g., "I belong to AI and Data Science." (only if no other field was mapped in this utterance)
+    if not results:
+        for fmeta in field_metadata:
+            fname = fmeta["name"]
+            if fmeta["type"] in ("select", "radio"):
+                options = fmeta["options"] or []
+                matched_opt, is_ambig = match_dropdown_option(text, options)
+                if matched_opt and not is_ambig:
+                    results[fname] = matched_opt
 
     return results

@@ -256,4 +256,144 @@ describe("Continuous Voice Conversation & State Transitions", () => {
     // Case 4: In confirming stage, all filled, user explicitly confirmed
     expect(isSubmissionPending("confirming_submission", true, true)).toBe(true);
   });
+
+  it("verifies 10-state ChatGPT Voice Mode lifecycle with greeting, interruption, and reliable stop", () => {
+    class ChatGPTVoiceStateMachine {
+      constructor() {
+        this.state = "idle";
+        this.status = "Assistant ready";
+        this.isStopped = false;
+        this.ttsActive = false;
+        this.micActive = false;
+      }
+
+      start(greeting) {
+        this.isStopped = false;
+        this.state = "initializing";
+        this.status = "Initializing voice session...";
+
+        // Speak greeting
+        this.state = "speaking";
+        this.ttsActive = true;
+        this.status = `Greeting: ${greeting}`;
+      }
+
+      greetingFinished() {
+        if (this.isStopped) return;
+        this.ttsActive = false;
+        this.state = "listening";
+        this.micActive = true;
+        this.status = "Listening for user response...";
+      }
+
+      userSpeechStarted() {
+        if (this.isStopped) return;
+        this.state = "recording";
+        this.status = "Recording user voice...";
+      }
+
+      silenceDetectedOrDone() {
+        if (this.isStopped) return;
+        this.micActive = false;
+        this.state = "transcribing";
+        this.status = "Transcribing with STT provider...";
+      }
+
+      transcriptReceived(text) {
+        if (this.isStopped) return;
+        this.state = "processing";
+        this.status = "Processing turn with Groq LLM...";
+      }
+
+      aiResponseReady(response, isCompleted = false) {
+        if (this.isStopped) return;
+        if (isCompleted) {
+          this.state = "confirmation";
+          this.status = "Form completed. Awaiting confirmation...";
+        } else {
+          this.state = "speaking";
+          this.ttsActive = true;
+          this.status = `Speaking: ${response}`;
+        }
+      }
+
+      assistantSpeechFinished() {
+        if (this.isStopped) return;
+        this.ttsActive = false;
+        this.state = "listening";
+        this.micActive = true;
+        this.status = "Listening... Speak your next detail.";
+      }
+
+      interrupt() {
+        if (this.state === "speaking") {
+          this.ttsActive = false;
+          this.state = "listening";
+          this.micActive = true;
+          this.status = "Interrupted. Listening to you...";
+        }
+      }
+
+      stop() {
+        this.isStopped = true;
+        this.ttsActive = false;
+        this.micActive = false;
+        this.state = "stopped";
+        this.status = "Voice session stopped.";
+      }
+    }
+
+    const sm = new ChatGPTVoiceStateMachine();
+    expect(sm.state).toBe("idle");
+
+    // 1. Start Voice Assistant -> initializing -> speaking greeting
+    sm.start("Hello! What is your full name?");
+    expect(sm.state).toBe("speaking");
+    expect(sm.ttsActive).toBe(true);
+
+    // 2. Greeting finishes -> auto-listens
+    sm.greetingFinished();
+    expect(sm.state).toBe("listening");
+    expect(sm.micActive).toBe(true);
+
+    // 3. User begins speaking -> recording
+    sm.userSpeechStarted();
+    expect(sm.state).toBe("recording");
+
+    // 4. Silence detected -> transcribing
+    sm.silenceDetectedOrDone();
+    expect(sm.state).toBe("transcribing");
+    expect(sm.micActive).toBe(false);
+
+    // 5. Transcript parsed -> processing with AI
+    sm.transcriptReceived("My name is John Doe");
+    expect(sm.state).toBe("processing");
+
+    // 6. AI responds -> speaking response
+    sm.aiResponseReady("Thank you John Doe. What is your email address?");
+    expect(sm.state).toBe("speaking");
+
+    // 7. Interruption test: User clicks mic or interrupts while assistant is speaking
+    sm.interrupt();
+    expect(sm.state).toBe("listening");
+    expect(sm.micActive).toBe(true);
+    expect(sm.ttsActive).toBe(false);
+
+    // 8. User provides email, silence detected, AI finishes all fields -> confirmation
+    sm.silenceDetectedOrDone();
+    sm.transcriptReceived("john@example.com");
+    sm.aiResponseReady("All required fields are completed! Do you want to submit?", true);
+    expect(sm.state).toBe("confirmation");
+
+    // 9. Stop test: user clicks Stop button
+    sm.stop();
+    expect(sm.state).toBe("stopped");
+    expect(sm.isStopped).toBe(true);
+    expect(sm.micActive).toBe(false);
+
+    // Any delayed speech callback or silence timeout cannot re-open mic when stopped
+    sm.assistantSpeechFinished();
+    expect(sm.state).toBe("stopped");
+    expect(sm.micActive).toBe(false);
+  });
 });

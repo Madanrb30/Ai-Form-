@@ -9,8 +9,8 @@ export default function LoginPage({ setView }) {
 
   const [isRegisterMode, setIsRegisterMode] = useState(false);
   const [name, setName] = useState("");
-  const [email, setEmail] = useState("madan@example.com");
-  const [password, setPassword] = useState("password123");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [rememberMe, setRememberMe] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -34,14 +34,24 @@ export default function LoginPage({ setView }) {
 
     setLoading(true);
     try {
+      let loggedUser;
       if (isRegisterMode) {
-        await register(name, email, password);
+        loggedUser = await register(name, email, password);
         toast("Account created successfully. Welcome!", "success");
       } else {
-        await login(email, password, rememberMe);
+        loggedUser = await login(email, password, rememberMe);
         toast("Signed in successfully.", "success");
       }
-      setView({ name: "dashboard" });
+
+      // Route to role-appropriate destination
+      const userRole = String(loggedUser?.role || "USER").toUpperCase();
+      if (userRole === "SUPER_ADMIN") {
+        setView({ name: "super-admin" });
+      } else if (userRole === "ADMIN") {
+        setView({ name: "admin" });
+      } else {
+        setView({ name: "dashboard" });
+      }
     } catch (err) {
       setError(err.message || "Authentication failed. Please verify credentials.");
     } finally {

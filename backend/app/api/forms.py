@@ -451,27 +451,34 @@ def delete_form(
     drafts_count = len(form.drafts) if form.drafts else 0
 
     try:
-        # Clean up generated PDF files from disk
+        # Collect file paths to clean up ONLY after successful database deletion
+        pdf_paths_to_clean = []
         if form.submissions:
             for sub in form.submissions:
-                if sub.generated_pdf_path and os.path.exists(sub.generated_pdf_path):
-                    try:
-                        os.remove(sub.generated_pdf_path)
-                    except OSError as e:
-                        logger.warning(f"Could not delete PDF file {sub.generated_pdf_path}: {e}")
+                if sub.generated_pdf_path:
+                    pdf_paths_to_clean.append(sub.generated_pdf_path)
 
-        # Clean up original document if stored
-        if form.original_document_path and os.path.exists(form.original_document_path):
-            try:
-                os.remove(form.original_document_path)
-            except OSError as e:
-                logger.warning(f"Could not delete document file {form.original_document_path}: {e}")
-
+        orig_doc_to_clean = form.original_document_path
         form_title = form.title
         form_owner_id = form.user_id
 
+        # Perform atomic database deletion first
         db.delete(form)
         db.commit()
+
+        # Clean up physical files ONLY after database transaction commits safely
+        for pdf_path in pdf_paths_to_clean:
+            if pdf_path and os.path.exists(pdf_path):
+                try:
+                    os.remove(pdf_path)
+                except OSError as e:
+                    logger.warning(f"Could not delete PDF file {pdf_path}: {e}")
+
+        if orig_doc_to_clean and os.path.exists(orig_doc_to_clean):
+            try:
+                os.remove(orig_doc_to_clean)
+            except OSError as e:
+                logger.warning(f"Could not delete document file {orig_doc_to_clean}: {e}")
 
         # Audit administrative or user deletion
         record_audit_log(
@@ -915,7 +922,8 @@ def download_submission_pdf(
     is_owner = (form.user_id is not None) and (current_user.id == form.user_id)
     is_author = (submission.user_id is not None) and (current_user.id == submission.user_id)
     is_admin = current_user.role in ["ADMIN", "SUPER_ADMIN"]
-    if not is_owner and not is_author and not is_admin:
+    has_access = is_owner or is_author or is_admin or (submission.user_id is None and form.is_public)
+    if not has_access:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have permission to download this submission PDF."
@@ -924,11 +932,12 @@ def download_submission_pdf(
     pdf_path = submission.generated_pdf_path
 
     if not pdf_path or not os.path.exists(pdf_path):
+        schema_dict = form.schema_json or {}
         pdf_path = generate_completed_pdf(
             form_title=form.title,
             form_description=form.description,
-            fields_schema=form.schema_json.get("fields", []),
-            response_data=submission.response_json,
+            fields_schema=schema_dict.get("fields", []),
+            response_data=submission.response_json or {},
             submission_id=submission.id,
             original_pdf_path=form.original_document_path,
         )
