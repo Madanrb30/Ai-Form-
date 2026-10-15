@@ -1,14 +1,16 @@
 import React from "react";
-import { Mic, MicOff, Square, Loader2, Sparkles, CheckCircle2, AlertTriangle } from "lucide-react";
+import { Mic, Square, Loader2, Volume2, Pause, AlertTriangle, CheckCircle2 } from "lucide-react";
 
 export default function MicrophoneButton({
-  state = "idle", // 'idle' | 'requesting' | 'listening' | 'transcribing' | 'processing' | 'filling' | 'waiting' | 'error' | 'completed'
+  state = "ready", // 'ready' | 'listening' | 'processing' | 'speaking' | 'paused' | 'error' | 'completed'
   onClick,
   disabled = false,
   size = "lg", // 'md' | 'lg'
 }) {
   const isListening = state === "listening";
   const isProcessing = ["transcribing", "processing", "filling"].includes(state);
+  const isSpeaking = state === "speaking";
+  const isPaused = state === "paused";
   const isError = state === "error";
   const isCompleted = state === "completed";
 
@@ -25,6 +27,10 @@ export default function MicrophoneButton({
     buttonStyle = "bg-neutral-900 text-white border-neutral-900 shadow-xl ring-4 ring-neutral-400/40";
   } else if (isProcessing) {
     buttonStyle = "bg-neutral-900 text-white border-neutral-800 shadow-md";
+  } else if (isSpeaking) {
+    buttonStyle = "bg-neutral-900 text-emerald-400 border-emerald-500 shadow-lg ring-4 ring-emerald-400/30";
+  } else if (isPaused) {
+    buttonStyle = "bg-amber-600 text-white hover:bg-amber-700 border-amber-500 shadow-md";
   } else if (isError) {
     buttonStyle = "bg-red-600 text-white hover:bg-red-700 border-red-500 shadow-md";
   } else if (isCompleted) {
@@ -41,6 +47,11 @@ export default function MicrophoneButton({
         </>
       )}
 
+      {/* Speaking wave effect */}
+      {isSpeaking && (
+        <span className="absolute -inset-2 rounded-full border-2 border-emerald-500/40 animate-pulse pointer-events-none" />
+      )}
+
       {/* Processing spinner ring */}
       {isProcessing && (
         <span className="absolute -inset-1 rounded-full border-2 border-dashed border-neutral-900 animate-spin pointer-events-none" />
@@ -50,13 +61,25 @@ export default function MicrophoneButton({
         type="button"
         disabled={disabled}
         onClick={onClick}
-        aria-label={isListening ? "Stop listening" : "Start speaking"}
-        className={`relative rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed select-none ${sizeClasses} ${buttonStyle}`}
+        aria-label={
+          isListening
+            ? "Stop listening"
+            : isSpeaking
+            ? "Speaking"
+            : isPaused
+            ? "Resume voice session"
+            : "Start speaking"
+        }
+        className={`relative rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed select-none focus:outline-none focus:ring-4 focus:ring-neutral-400/50 ${sizeClasses} ${buttonStyle}`}
       >
         {isListening ? (
           <Square className={`${iconSize} fill-current`} />
         ) : isProcessing ? (
           <Loader2 className={`${iconSize} animate-spin`} />
+        ) : isSpeaking ? (
+          <Volume2 className={`${iconSize} animate-pulse`} />
+        ) : isPaused ? (
+          <Pause className={iconSize} />
         ) : isCompleted ? (
           <CheckCircle2 className={iconSize} />
         ) : isError ? (

@@ -38,6 +38,7 @@ from app.services.voice_mapping import map_transcript_to_fields
 from app.services.conversation_service import conversation_manager
 from app.services.pdf_service import generate_completed_pdf, process_document_hybrid
 from app.services.ai_provider import AIProviderError
+from app.services.audit_service import record_audit_log
 from app.core.logging import logger
 
 router = APIRouter(prefix="/forms", tags=["Forms"])
@@ -394,12 +395,19 @@ def update_form(
 @router.delete("/{form_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_form(
     form_id: int,
+    confirm_delete_submissions: bool = Query(False, description="Explicit confirmation to delete form along with its submissions"),
+    confirm_submissions: bool = Query(False, description="Alternative alias for confirm_delete_submissions"),
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_current_user_optional)
 ):
     """
-    Delete a form and all associated submissions (cascaded).
-    Only the form owner can delete a form. Shared templates cannot be deleted.
+    Delete a form and all associated dependent records (cascaded).
+    - SUPER_ADMIN can delete any form (shared templates or user-created forms).
+    - Regular users and standard ADMINs can only delete forms they own.
+    - If a form has submissions, explicit confirmation (confirm_delete_submissions=true) is required
+      to prevent unintentional data loss.
+    - Administrative actions are recorded in the immutable audit log.
+    - If an error occurs, the database transaction is rolled back.
     """
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
@@ -414,22 +422,86 @@ def delete_form(
             detail="Authentication required to delete this form."
         )
 
-    if form.user_id is None:
+    is_super_admin = current_user.role == "SUPER_ADMIN"
+
+    # Non-super-admins cannot delete shared system templates
+    if form.user_id is None and not is_super_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Shared system templates cannot be deleted."
         )
 
-    if form.user_id != current_user.id:
+    # Non-super-admins can only delete forms they own
+    if form.user_id is not None and form.user_id != current_user.id and not is_super_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have permission to delete this form."
         )
 
-    db.delete(form)
-    db.commit()
-    logger.info(f"Form {form_id} and associated submissions deleted by user {current_user.id}")
-    return None
+    # Check dependent submissions
+    subs_count = len(form.submissions) if form.submissions else 0
+    confirmed = confirm_delete_submissions or confirm_submissions
+
+    if subs_count > 0 and not confirmed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Form has {subs_count} associated submission(s). Explicit confirmation is required to permanently delete this form and all of its submission records."
+        )
+
+    drafts_count = len(form.drafts) if form.drafts else 0
+
+    try:
+        # Clean up generated PDF files from disk
+        if form.submissions:
+            for sub in form.submissions:
+                if sub.generated_pdf_path and os.path.exists(sub.generated_pdf_path):
+                    try:
+                        os.remove(sub.generated_pdf_path)
+                    except OSError as e:
+                        logger.warning(f"Could not delete PDF file {sub.generated_pdf_path}: {e}")
+
+        # Clean up original document if stored
+        if form.original_document_path and os.path.exists(form.original_document_path):
+            try:
+                os.remove(form.original_document_path)
+            except OSError as e:
+                logger.warning(f"Could not delete document file {form.original_document_path}: {e}")
+
+        form_title = form.title
+        form_owner_id = form.user_id
+
+        db.delete(form)
+        db.commit()
+
+        # Audit administrative or user deletion
+        record_audit_log(
+            db=db,
+            action="FORM_DELETED",
+            actor_id=current_user.id,
+            actor_email=current_user.email,
+            target_type="Form",
+            target_id=str(form_id),
+            details={
+                "form_id": form_id,
+                "title": form_title,
+                "owner_id": form_owner_id,
+                "deleted_by_role": current_user.role,
+                "submissions_deleted": subs_count,
+                "drafts_deleted": drafts_count,
+            },
+            status="SUCCESS"
+        )
+        logger.info(f"Form {form_id} ('{form_title}') successfully deleted by {current_user.role} user {current_user.id}")
+        return None
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to delete form {form_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database error occurred while deleting the form: {str(e)}"
+        )
 
 
 @router.get("/{form_id}/original-document")

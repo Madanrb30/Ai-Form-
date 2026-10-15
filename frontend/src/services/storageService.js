@@ -5,6 +5,7 @@ const DEFAULT_SETTINGS = {
   language: "en-US",
   voiceSpeed: 1.0,
   voicePlayback: false,
+  continuousMode: false,
   voiceConfirmation: true,
   storeTranscripts: true,
   theme: "light",

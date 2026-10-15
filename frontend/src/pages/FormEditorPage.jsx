@@ -119,8 +119,8 @@ export default function FormEditorPage({ formId, formTitle, setView }) {
           >
             <ArrowLeft className="w-4 h-4" />
           </button>
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-neutral-900">
+          <div className="min-w-0">
+            <h1 className="text-xl font-bold tracking-tight text-neutral-900 break-words">
               {form?.title}
             </h1>
             <p className="text-xs text-[#737373] mt-0.5">
@@ -129,7 +129,7 @@ export default function FormEditorPage({ formId, formTitle, setView }) {
           </div>
         </div>
 
-        <div className="flex items-center space-x-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() =>
               setView({
@@ -171,7 +171,7 @@ export default function FormEditorPage({ formId, formTitle, setView }) {
       </div>
 
       {/* Form Completion Progress Card */}
-      <div className="mt-6 p-4 bg-[#F7F7F7] border border-[#E5E5E5] rounded-xl flex items-center justify-between">
+      <div className="mt-6 p-4 bg-[#F7F7F7] border border-[#E5E5E5] rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center space-x-3 flex-1 max-w-md">
           <span className="text-xs font-semibold text-neutral-900 whitespace-nowrap">
             Completion:
@@ -203,7 +203,7 @@ export default function FormEditorPage({ formId, formTitle, setView }) {
         />
 
         {/* Footer Actions */}
-        <div className="mt-8 pt-5 border-t border-[#E5E5E5] flex items-center justify-between">
+        <div className="mt-8 pt-5 border-t border-[#E5E5E5] flex flex-wrap items-center justify-between gap-3">
           <button
             type="button"
             onClick={() => {

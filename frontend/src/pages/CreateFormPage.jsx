@@ -13,7 +13,6 @@ import {
   Loader2,
   X,
   Edit3,
-  CheckCircle2,
   AlertTriangle,
   RotateCcw,
 } from "lucide-react";
@@ -314,7 +313,7 @@ export default function CreateFormPage({ setView }) {
       </div>
 
       {/* Tabs Switcher */}
-      <div className="flex border-b border-[#E5E5E5] mt-6">
+      <div className="flex overflow-x-auto border-b border-[#E5E5E5] mt-6">
         <button
           onClick={() => {
             setActiveTab("upload");

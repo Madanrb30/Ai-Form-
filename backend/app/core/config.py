@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-from typing import List, Union
+from typing import List, Union, Optional
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -38,6 +38,22 @@ class Settings(BaseSettings):
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
     GROQ_VISION_MODEL: str = "qwen/qwen3.8-27b"
     GROQ_TRANSCRIPTION_MODEL: str = "whisper-large-v3-turbo"
+
+    # Configurable Speech-to-Text (STT) Providers
+    STT_PROVIDER: str = "groq"  # "groq" or "sarvam"
+    GROQ_STT_MODEL: str = "whisper-large-v3-turbo"  # "whisper-large-v3-turbo" or "whisper-large-v3"
+    GROQ_STT_LANGUAGE: Optional[str] = None  # None for auto-detect; or "ta", "en"
+    GROQ_STT_TEMPERATURE: float = 0.0
+    GROQ_STT_PROMPT: Optional[str] = (
+        "English, Tamil, Tanglish form details. Names, email, phone numbers, department names."
+    )
+
+    # Optional Sarvam AI STT Provider
+    SARVAM_API_KEY: str = ""
+    SARVAM_STT_MODEL: str = "saaras:v4"  # "saaras:v4" or "saaras:v3"
+    SARVAM_STT_MODE: str = "codemix"  # "codemix", "transcribe", "verbatim", "translate", "translit"
+    SARVAM_STT_LANGUAGE_CODE: str = "unknown"  # "unknown", "ta-IN", "en-IN"
+
     MAX_AUDIO_SIZE_BYTES: int = 25 * 1024 * 1024  # 25 MB (Groq limit)
     DOCUMENT_PROCESSING_TIMEOUT: float = 35.0
     MAX_DOCUMENT_PAGES: int = 10
@@ -139,6 +155,25 @@ class Settings(BaseSettings):
                     "Production configuration error: When BOOTSTRAP_SECRET_KEY is configured in production, "
                     "it must be at least 32 characters and cryptographically secure."
                 )
+
+        # 6. STT Provider validation
+        provider = (self.STT_PROVIDER or "groq").strip().lower()
+        if provider not in ("groq", "sarvam"):
+            raise ValueError(
+                f"Configuration error: Unsupported STT_PROVIDER '{self.STT_PROVIDER}'. Supported options: 'groq', 'sarvam'."
+            )
+
+        if provider == "sarvam" and not self.AI_DEMO_MODE:
+            if is_production and not (self.SARVAM_API_KEY or "").strip():
+                raise ValueError(
+                    "Production configuration error: SARVAM_API_KEY must be provided when STT_PROVIDER='sarvam'."
+                )
+
+        # Synchronize backward-compatible GROQ_TRANSCRIPTION_MODEL and GROQ_STT_MODEL
+        if self.GROQ_STT_MODEL and self.GROQ_STT_MODEL != "whisper-large-v3-turbo":
+            self.GROQ_TRANSCRIPTION_MODEL = self.GROQ_STT_MODEL
+        elif self.GROQ_TRANSCRIPTION_MODEL and self.GROQ_TRANSCRIPTION_MODEL != "whisper-large-v3-turbo":
+            self.GROQ_STT_MODEL = self.GROQ_TRANSCRIPTION_MODEL
 
         return self
 

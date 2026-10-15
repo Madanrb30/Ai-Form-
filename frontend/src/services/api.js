@@ -148,7 +148,10 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(formData),
     }),
-  deleteForm: (id) => request(`/forms/${id}`, { method: "DELETE" }),
+  deleteForm: (id, options = {}) => {
+    const query = options?.confirmDeleteSubmissions ? "?confirm_delete_submissions=true" : "";
+    return request(`/forms/${id}${query}`, { method: "DELETE" });
+  },
 
   // Submissions & PDF Export
   createSubmission: (formId, responseJson) =>
@@ -184,12 +187,18 @@ export const api = {
     window.URL.revokeObjectURL(blobUrl);
   },
 
-  // Cloud Speech-to-Text Transcription via Groq Whisper-large-v3-turbo
-  transcribeAudio: (audioBlob, { filename = "recording.webm", language = null } = {}) => {
+  // Cloud Speech-to-Text Transcription (Groq Whisper, Sarvam AI)
+  transcribeAudio: (audioBlob, { filename = "recording.webm", language = null, provider = null, prompt = null } = {}) => {
     const formData = new FormData();
     formData.append("file", audioBlob, filename);
     if (language) {
       formData.append("language", language);
+    }
+    if (provider) {
+      formData.append("provider", provider);
+    }
+    if (prompt) {
+      formData.append("prompt", prompt);
     }
     return request("/voice/transcribe", {
       method: "POST",

@@ -5,7 +5,12 @@ export const ttsService = {
   },
 
   speak(text, options = {}) {
-    if (!this.isSupported() || !text) return;
+    if (!this.isSupported() || !text) {
+      if (typeof options.onEnd === "function") {
+        setTimeout(options.onEnd, 50);
+      }
+      return;
+    }
 
     try {
       window.speechSynthesis.cancel(); // Stop any pending utterances
@@ -13,6 +18,24 @@ export const ttsService = {
       utterance.rate = options.rate || 1.0;
       utterance.pitch = options.pitch || 1.0;
       utterance.lang = options.lang || "en-US";
+
+      if (typeof options.onStart === "function") {
+        utterance.onstart = options.onStart;
+      }
+
+      if (typeof options.onEnd === "function") {
+        utterance.onend = () => {
+          options.onEnd();
+        };
+      }
+
+      utterance.onerror = (e) => {
+        if (typeof options.onError === "function") {
+          options.onError(e);
+        } else if (typeof options.onEnd === "function") {
+          options.onEnd();
+        }
+      };
 
       // Pick a natural voice if available
       const voices = window.speechSynthesis.getVoices();
@@ -27,7 +50,9 @@ export const ttsService = {
 
       window.speechSynthesis.speak(utterance);
     } catch {
-      // Ignore audio synthesis errors silently
+      if (typeof options.onEnd === "function") {
+        options.onEnd();
+      }
     }
   },
 
@@ -35,5 +60,9 @@ export const ttsService = {
     if (this.isSupported()) {
       window.speechSynthesis.cancel();
     }
+  },
+
+  isSpeaking() {
+    return this.isSupported() && Boolean(window.speechSynthesis.speaking);
   },
 };

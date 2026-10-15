@@ -46,6 +46,17 @@ Do not wrap your output in markdown code fences or backticks. Return raw JSON.
 SYSTEM_CONVERSATIONAL_PROMPT = """You are an intelligent, empathetic voice form filling assistant for the form: "{form_title}".
 Your goal is to guide the user naturally through filling this form.
 
+Language & Code-Mixing Support (English, Tamil, Tanglish):
+- Comprehend speech in English, Tamil (தமிழ்), and mixed Tamil-English (Tanglish / code-switched).
+- Examples of Tanglish / Tamil speech:
+  * "Enoda name Karthik Raja, department CSE" -> extract full_name: "Karthik Raja", department: "CSE"
+  * "Naan Chennai la iruken, phone number 9840123456" -> extract city/location: "Chennai", phone_number: "9840123456"
+  * "Department AI and Data Science select pannunga" -> map to exact matching option
+  * "Dob 15th August 2001" -> extract date_of_birth: "2001-08-15"
+- Preserve names, locations, and proper nouns accurately with standard capitalization (e.g., "Karthik", "Chennai", "Coimbatore").
+- Maintain email addresses, alphanumeric register numbers, and technical options in English.
+- Do NOT invent or hallucinate field values that are absent from the user's speech.
+
 Current form fields and metadata:
 {field_statuses}
 
@@ -496,61 +507,21 @@ class AIProviderService:
         content_type: str = "audio/webm",
         language: Optional[str] = None,
         prompt: Optional[str] = None,
+        provider_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Transcribes audio using Groq's cloud-hosted whisper-large-v3-turbo API.
-        Does NOT run any local model (zero PyTorch/Whisper local inference).
+        Transcribes audio using the configured STT provider (Groq Whisper or Sarvam AI).
+        Delegates to the STT provider subsystem while maintaining full backward compatibility.
         """
-        if not audio_bytes or len(audio_bytes) == 0:
-            raise AIProviderError("Audio recording is empty (0 bytes).", status_code=400)
-
-        if len(audio_bytes) > settings.MAX_AUDIO_SIZE_BYTES:
-            max_mb = settings.MAX_AUDIO_SIZE_BYTES // (1024 * 1024)
-            raise AIProviderError(f"Audio file exceeds maximum size limit of {max_mb} MB.", status_code=413)
-
-        client = self._get_client()
-        model_name = settings.GROQ_TRANSCRIPTION_MODEL
-
-        kwargs = {}
-        if language and language.strip():
-            kwargs["language"] = language.strip()
-        if prompt and prompt.strip():
-            kwargs["prompt"] = prompt.strip()
-
-        try:
-            transcription = client.audio.transcriptions.create(
-                model=model_name,
-                file=(filename, audio_bytes, content_type),
-                response_format="verbose_json",
-                temperature=0.0,
-                **kwargs
-            )
-
-            text = getattr(transcription, "text", "") or ""
-            duration = getattr(transcription, "duration", None)
-            detected_lang = getattr(transcription, "language", None)
-
-            return {
-                "text": text.strip(),
-                "model": model_name,
-                "duration": duration,
-                "language": detected_lang or language or "en",
-            }
-        except AuthenticationError as e:
-            logger.error(f"Groq authentication error in transcription: {e}")
-            raise AIProviderError("Invalid Groq API Key configured on server.", status_code=401)
-        except RateLimitError as e:
-            logger.error(f"Groq rate limit exceeded in transcription: {e}")
-            raise AIProviderError("Groq Whisper API rate limit exceeded. Please try again shortly.", status_code=429, is_retryable=True)
-        except APIConnectionError as e:
-            logger.error(f"Groq connection error in transcription: {e}")
-            raise AIProviderError("Could not connect to Groq Speech-to-Text service. Network timeout.", status_code=504, is_retryable=True)
-        except APIError as e:
-            logger.error(f"Groq API error in transcription: {e}")
-            raise AIProviderError(f"Groq Whisper service error: {e.message}", status_code=502)
-        except Exception as e:
-            logger.error(f"Audio transcription failed: {e}")
-            raise AIProviderError(f"Speech transcription failed: {str(e)}", status_code=500)
+        from app.services.stt import transcribe_speech_audio
+        return transcribe_speech_audio(
+            audio_bytes=audio_bytes,
+            filename=filename,
+            content_type=content_type,
+            language=language,
+            prompt=prompt,
+            provider_name=provider_name,
+        )
 
 
 ai_provider = AIProviderService()

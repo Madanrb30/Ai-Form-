@@ -226,8 +226,8 @@ export default function ReviewFormPage({ formId, values = {}, setView, initialSu
           >
             <ArrowLeft className="w-4 h-4" />
           </button>
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-neutral-900">
+          <div className="min-w-0">
+            <h1 className="text-xl font-bold tracking-tight text-neutral-900 break-words">
               Review Your Form
             </h1>
             <p className="text-xs text-[#737373] mt-0.5">
@@ -236,7 +236,7 @@ export default function ReviewFormPage({ formId, values = {}, setView, initialSu
           </div>
         </div>
 
-        <div className="flex items-center space-x-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() =>
               setView({
@@ -353,7 +353,7 @@ export default function ReviewFormPage({ formId, values = {}, setView, initialSu
       </div>
 
       {/* Bottom Submit Action */}
-      <div className="mt-8 pt-6 border-t border-[#E5E5E5] flex items-center justify-between">
+      <div className="mt-8 pt-6 border-t border-[#E5E5E5] flex flex-wrap items-center justify-between gap-3">
         <button
           onClick={() =>
             setView({

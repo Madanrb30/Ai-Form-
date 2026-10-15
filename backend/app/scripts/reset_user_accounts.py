@@ -105,8 +105,8 @@ def execute_account_reset(db: Session, dry_run: bool = False) -> dict:
 
     # Execute within explicit transaction
     try:
-        # Step 1: Disassociate forms from deleted users while preserving original visibility (public stays public, private stays private)
-        db.execute(text("UPDATE forms SET user_id = NULL WHERE user_id IS NOT NULL"))
+        # Step 1: Disassociate forms from deleted users and make them shared templates
+        db.execute(text("UPDATE forms SET user_id = NULL, is_public = 1 WHERE user_id IS NOT NULL"))
 
         # Step 2: Disassociate submissions from deleted users (preserving response data & PDFs)
         db.execute(text("UPDATE submissions SET user_id = NULL WHERE user_id IS NOT NULL"))
