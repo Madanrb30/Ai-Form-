@@ -1,0 +1,42 @@
+[
+  {
+    "id": "sample_en_01",
+    "category": "English Form Fields",
+    "audio_filename": "sample_en_01.wav",
+    "reference_transcript": "My name is Priya Sundaram, email priya.s@example.com, register number 21CS042",
+    "expected_entities": ["Priya Sundaram"],
+    "expected_numbers": ["21CS042", "21"]
+  },
+  {
+    "id": "sample_tanglish_01",
+    "category": "Tamil-English Mixed (Tanglish)",
+    "audio_filename": "sample_tanglish_01.wav",
+    "reference_transcript": "Enoda name Karthik Raja, department Computer Science and Engineering select pannunga",
+    "expected_entities": ["Karthik Raja", "Computer Science and Engineering"],
+    "expected_numbers": []
+  },
+  {
+    "id": "sample_tanglish_02",
+    "category": "Tamil-English Mixed (Tanglish Contact & Location)",
+    "audio_filename": "sample_tanglish_02.wav",
+    "reference_transcript": "Naan Chennai la iruken, phone number 9840123456, pincode 600028",
+    "expected_entities": ["Chennai"],
+    "expected_numbers": ["9840123456", "600028"]
+  },
+  {
+    "id": "sample_tanglish_03",
+    "category": "Tanglish Date & Choice",
+    "audio_filename": "sample_tanglish_03.wav",
+    "reference_transcript": "Date of birth 15th August 2001, gender male",
+    "expected_entities": ["August", "male"],
+    "expected_numbers": ["15", "2001"]
+  },
+  {
+    "id": "sample_ta_01",
+    "category": "Tamil Script Form Input",
+    "audio_filename": "sample_ta_01.wav",
+    "reference_transcript": "என் பெயர் ஆனந்த், சென்னை மாவட்டத்தில் வசிக்கிறேன்",
+    "expected_entities": ["ஆனந்த்", "சென்னை"],
+    "expected_numbers": []
+  }
+]

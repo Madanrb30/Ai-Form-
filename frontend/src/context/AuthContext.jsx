@@ -11,14 +11,14 @@ export function AuthProvider({ children }) {
     setIsAuthenticated(Boolean(user));
   }, [user]);
 
-  const login = (email, password, remember = true) => {
-    const loggedInUser = authService.login(email, password, remember);
+  const login = async (email, password, remember = true) => {
+    const loggedInUser = await authService.login(email, password, remember);
     setUser(loggedInUser);
     return loggedInUser;
   };
 
-  const register = (name, email, password) => {
-    const newUser = authService.register(name, email, password);
+  const register = async (name, email, password) => {
+    const newUser = await authService.register(name, email, password);
     setUser(newUser);
     return newUser;
   };
@@ -34,10 +34,17 @@ export function AuthProvider({ children }) {
     return updated;
   };
 
+  const role = user?.role ? String(user.role).toUpperCase() : "USER";
+  const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
+  const isSuperAdmin = role === "SUPER_ADMIN";
+
   return (
     <AuthContext.Provider
       value={{
         user,
+        role,
+        isAdmin,
+        isSuperAdmin,
         isAuthenticated,
         login,
         register,

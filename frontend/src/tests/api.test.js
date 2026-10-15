@@ -1,8 +1,32 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+
+const createStorageMock = () => {
+  let store = {};
+  return {
+    getItem: vi.fn((key) => store[key] || null),
+    setItem: vi.fn((key, value) => {
+      store[key] = String(value);
+    }),
+    removeItem: vi.fn((key) => {
+      delete store[key];
+    }),
+    clear: vi.fn(() => {
+      store = {};
+    }),
+  };
+};
+
+const localStorageMock = createStorageMock();
+const sessionStorageMock = createStorageMock();
+globalThis.localStorage = localStorageMock;
+globalThis.sessionStorage = sessionStorageMock;
+
 import { api } from "../services/api";
 
 describe("Frontend API Service Unit Tests", () => {
   beforeEach(() => {
+    localStorageMock.clear();
+    sessionStorageMock.clear();
     vi.restoreAllMocks();
   });
 
@@ -88,6 +112,67 @@ describe("Frontend API Service Unit Tests", () => {
         body: expect.any(FormData),
       })
     );
+  });
+
+  it("ignores mock sess_ tokens and does not attach them in Authorization header", async () => {
+    localStorage.setItem("voxform_user_session", JSON.stringify({ token: "sess_placeholder_123" }));
+
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      json: async () => [],
+    });
+
+    await api.getForms();
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/forms"),
+      expect.objectContaining({
+        headers: expect.not.objectContaining({
+          Authorization: expect.stringContaining("sess_"),
+        }),
+      })
+    );
+    localStorage.clear();
+  });
+
+  it("attaches real JWT Bearer token in Authorization header", async () => {
+    localStorage.setItem("voxform_user_session", JSON.stringify({ token: "eyJhbGciOiJIUzI1NiJ9.payload.sig" }));
+
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      json: async () => [],
+    });
+
+    await api.getForms();
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/forms"),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: "Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig",
+        }),
+      })
+    );
+    localStorage.clear();
+  });
+
+  it("clears stale session storage when server returns 401 Unauthorized", async () => {
+    localStorage.setItem("voxform_user_session", JSON.stringify({ token: "expired.jwt.token" }));
+
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      statusText: "Unauthorized",
+      headers: { get: () => "application/json" },
+      json: async () => ({ detail: "Invalid authentication token." }),
+    });
+
+    await expect(api.getForms()).rejects.toThrow("Invalid authentication token.");
+    expect(localStorage.getItem("voxform_user_session")).toBeNull();
   });
 });
 

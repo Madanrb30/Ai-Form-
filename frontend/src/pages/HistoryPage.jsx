@@ -12,13 +12,16 @@ import {
   FileText,
   Eye,
   Edit3,
+  Loader2,
 } from "lucide-react";
 import { api } from "../services/api";
 import { storageService } from "../services/storageService";
+import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ToastContext";
 import Modal from "../components/common/Modal";
 
 export default function HistoryPage({ setView }) {
+  const { user } = useAuth();
   const { toast } = useToast();
 
   const [forms, setForms] = useState([]);
@@ -35,6 +38,7 @@ export default function HistoryPage({ setView }) {
   // Delete modal
   const [deleteFormTarget, setDeleteFormTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [confirmDeleteSubmissionsChecked, setConfirmDeleteSubmissionsChecked] = useState(false);
 
   const loadHistory = async () => {
     setLoading(true);
@@ -43,7 +47,7 @@ export default function HistoryPage({ setView }) {
       const formsList = await api.getForms();
       setForms(formsList);
 
-      const localDrafts = storageService.getDrafts();
+      const localDrafts = storageService.getDrafts(user?.id);
       setDraftsMap(localDrafts);
 
       // Fetch submissions for all forms
@@ -66,17 +70,21 @@ export default function HistoryPage({ setView }) {
 
   useEffect(() => {
     loadHistory();
-  }, []);
+  }, [user?.id]);
 
   const confirmDeleteForm = async () => {
-    if (!deleteFormTarget) return;
+    if (!deleteFormTarget || deleting) return;
     setDeleting(true);
     try {
-      await api.deleteForm(deleteFormTarget.id);
-      storageService.deleteDraft(deleteFormTarget.id);
+      await api.deleteForm(deleteFormTarget.id, {
+        confirmDeleteSubmissions: confirmDeleteSubmissionsChecked,
+      });
+      storageService.deleteDraft(deleteFormTarget.id, user?.id);
       setForms((prev) => prev.filter((f) => f.id !== deleteFormTarget.id));
-      toast(`Form "${deleteFormTarget.title}" deleted.`, "info");
+      toast(`Form "${deleteFormTarget.title}" deleted successfully.`, "info");
       setDeleteFormTarget(null);
+      setConfirmDeleteSubmissionsChecked(false);
+      loadHistory();
     } catch (err) {
       toast(`Failed to delete form: ${err.message}`, "error");
     } finally {
@@ -327,13 +335,19 @@ export default function HistoryPage({ setView }) {
                           <Download className="w-3 h-3" />
                         </button>
 
-                        <button
-                          onClick={() => setDeleteFormTarget(item)}
-                          className="p-1 text-neutral-400 hover:text-red-600 rounded hover:bg-red-50 transition-colors cursor-pointer"
-                          title="Delete Form"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </button>
+                        {/* Delete button: Only SUPER_ADMIN can delete any form; regular users can only delete their own forms */}
+                        {(user?.role === "SUPER_ADMIN" || (item.user_id && item.user_id === Number(user?.id))) && (
+                          <button
+                            onClick={() => {
+                              setDeleteFormTarget(item);
+                              setConfirmDeleteSubmissionsChecked(false);
+                            }}
+                            className="p-1 text-neutral-400 hover:text-red-600 rounded hover:bg-red-50 transition-colors cursor-pointer"
+                            title={user?.role === "SUPER_ADMIN" ? "Delete Form (Super Admin)" : "Delete Form"}
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        )}
                       </td>
                     </tr>
                   );
@@ -347,33 +361,63 @@ export default function HistoryPage({ setView }) {
       {/* Delete Confirmation Modal */}
       <Modal
         isOpen={Boolean(deleteFormTarget)}
-        onClose={() => setDeleteFormTarget(null)}
-        title="Delete Form History"
+        onClose={() => {
+          if (!deleting) {
+            setDeleteFormTarget(null);
+            setConfirmDeleteSubmissionsChecked(false);
+          }
+        }}
+        title="Delete Form"
       >
         <div className="text-left text-xs text-neutral-700 space-y-3">
           <p>
-            Are you sure you want to delete{" "}
-            <strong className="text-neutral-900 font-semibold">
+            Are you sure you want to permanently delete the form{" "}
+            <strong className="text-neutral-900 font-semibold break-words">
               &quot;{deleteFormTarget?.title}&quot;
             </strong>
             ?
           </p>
-          <p className="text-neutral-500">
-            This will permanently remove the form definition and any submissions recorded for it in SQLite.
-          </p>
+          <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 text-[11px] space-y-2">
+            <p className="font-semibold text-amber-950">Permanent Deletion Warning</p>
+            <p>
+              Deleting this form permanently removes its structure and all associated user submissions, drafts, and generated PDFs from SQLite.
+            </p>
+            <label className="flex items-start space-x-2 pt-1 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={confirmDeleteSubmissionsChecked}
+                onChange={(e) => setConfirmDeleteSubmissionsChecked(e.target.checked)}
+                className="mt-0.5 rounded border-amber-400 text-red-600 focus:ring-red-500 w-3.5 h-3.5 cursor-pointer shrink-0"
+              />
+              <span className="font-medium text-amber-950 leading-tight">
+                I understand and confirm permanent deletion of this form and all associated responses
+              </span>
+            </label>
+          </div>
           <div className="pt-3 flex justify-end space-x-2">
             <button
-              onClick={() => setDeleteFormTarget(null)}
-              className="px-3 py-1.5 border border-[#E5E5E5] rounded-lg text-xs font-medium text-neutral-700 hover:bg-neutral-50 cursor-pointer"
+              disabled={deleting}
+              onClick={() => {
+                setDeleteFormTarget(null);
+                setConfirmDeleteSubmissionsChecked(false);
+              }}
+              className="px-3 py-1.5 border border-[#E5E5E5] rounded-lg text-xs font-medium text-neutral-700 hover:bg-neutral-50 transition-colors cursor-pointer disabled:opacity-50"
             >
               Cancel
             </button>
             <button
-              disabled={deleting}
+              disabled={deleting || !confirmDeleteSubmissionsChecked}
               onClick={confirmDeleteForm}
-              className="px-3.5 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer"
+              className="px-3.5 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer shadow-xs flex items-center space-x-1.5"
             >
-              {deleting ? "Deleting..." : "Delete Form"}
+              {deleting ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Deleting...</span>
+                </>
+              ) : (
+                <span>Delete Form</span>
+              )}
             </button>
           </div>
         </div>

@@ -73,6 +73,19 @@ def test_conversational_turn_correction_and_completion(client, sample_form):
     # email is preserved
     assert data2["updated_values"].get("email") == "bob@example.com"
 
+    # Step 3: User confirms submission ("Yes, submit the form")
+    res3 = client.post(f"/api/forms/{sample_form.id}/conversation", json={
+        "session_id": session_id,
+        "transcript": "Yes, submit the form",
+        "current_values": data2["updated_values"]
+    })
+    assert res3.status_code == 200
+    data3 = res3.json()
+    assert data3["is_submitted"] is True
+    assert data3["submission_id"] is not None
+    assert "successfully submitted" in data3["assistant_response"].lower()
+    assert data3["stage"] == "submitted"
+
 
 def test_form_draft_lifecycle(client, sample_form):
     # 1. Draft should initially not exist (200 with null body)
@@ -110,7 +123,7 @@ def test_form_draft_lifecycle(client, sample_form):
     assert client.get(f"/api/forms/{sample_form.id}/draft").json() is None
 
 
-def test_pdf_submission_export(client, sample_form):
+def test_pdf_submission_export(client, sample_form, auth_headers):
     # Create submission
     sub_payload = {
         "response_json": {
@@ -120,12 +133,16 @@ def test_pdf_submission_export(client, sample_form):
             "cover_letter": "Diplomat and protector."
         }
     }
-    sub_res = client.post(f"/api/forms/{sample_form.id}/submissions", json=sub_payload)
+    sub_res = client.post(f"/api/forms/{sample_form.id}/submissions", json=sub_payload, headers=auth_headers)
     assert sub_res.status_code == 201
     submission_id = sub_res.json()["id"]
 
-    # Request PDF export
-    pdf_res = client.get(f"/api/forms/{sample_form.id}/submissions/{submission_id}/pdf")
+    # Anonymous visitor cannot download submission PDF
+    anon_pdf_res = client.get(f"/api/forms/{sample_form.id}/submissions/{submission_id}/pdf")
+    assert anon_pdf_res.status_code == 401
+
+    # Authorized author can download PDF export
+    pdf_res = client.get(f"/api/forms/{sample_form.id}/submissions/{submission_id}/pdf", headers=auth_headers)
     assert pdf_res.status_code == 200
     assert pdf_res.headers["content-type"] == "application/pdf"
     assert "attachment; filename=" in pdf_res.headers.get("content-disposition", "")

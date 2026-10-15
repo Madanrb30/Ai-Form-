@@ -14,7 +14,9 @@ function getStoredToken() {
     const raw = localStorage.getItem("voxform_user_session") || sessionStorage.getItem("voxform_user_session");
     if (raw) {
       const parsed = JSON.parse(raw);
-      return parsed.token || null;
+      if (parsed && typeof parsed.token === "string" && parsed.token.trim() && !parsed.token.startsWith("sess_")) {
+        return parsed.token.trim();
+      }
     }
   } catch {
     // Ignore parse error
@@ -68,6 +70,16 @@ async function request(endpoint, options = {}) {
     }
 
     if (!res.ok) {
+      // Purge invalid or expired session on 401 (except on login attempts)
+      if (res.status === 401 && endpoint !== "/auth/login") {
+        try {
+          localStorage.removeItem("voxform_user_session");
+          sessionStorage.removeItem("voxform_user_session");
+        } catch {
+          // ignore storage error
+        }
+      }
+
       const errMsg =
         (typeof data === "object" && (data?.detail?.message || data?.detail || data?.message)) ||
         `HTTP Error ${res.status}: ${res.statusText}`;
@@ -124,6 +136,7 @@ export const api = {
     });
   },
   getForms: () => request("/forms"),
+  getUserStats: () => request("/forms/user/stats"),
   getForm: (id) => request(`/forms/${id}`),
   createForm: (formData) =>
     request("/forms", {
@@ -135,7 +148,10 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(formData),
     }),
-  deleteForm: (id) => request(`/forms/${id}`, { method: "DELETE" }),
+  deleteForm: (id, options = {}) => {
+    const query = options?.confirmDeleteSubmissions ? "?confirm_delete_submissions=true" : "";
+    return request(`/forms/${id}${query}`, { method: "DELETE" });
+  },
 
   // Submissions & PDF Export
   createSubmission: (formId, responseJson) =>
@@ -171,12 +187,18 @@ export const api = {
     window.URL.revokeObjectURL(blobUrl);
   },
 
-  // Cloud Speech-to-Text Transcription via Groq Whisper-large-v3-turbo
-  transcribeAudio: (audioBlob, { filename = "recording.webm", language = null } = {}) => {
+  // Cloud Speech-to-Text Transcription (Groq Whisper, Sarvam AI)
+  transcribeAudio: (audioBlob, { filename = "recording.webm", language = null, provider = null, prompt = null } = {}) => {
     const formData = new FormData();
     formData.append("file", audioBlob, filename);
     if (language) {
       formData.append("language", language);
+    }
+    if (provider) {
+      formData.append("provider", provider);
+    }
+    if (prompt) {
+      formData.append("prompt", prompt);
     }
     return request("/voice/transcribe", {
       method: "POST",
@@ -201,11 +223,45 @@ export const api = {
     }),
 
   // Server-side Autosave Drafts
-  getDraft: (formId) => request(`/forms/${formId}/draft`),
-  saveDraft: (formId, valuesJson) =>
+  getDraft: (formId, sessionId = null) => {
+    const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+    return request(`/forms/${formId}/draft${query}`);
+  },
+  saveDraft: (formId, valuesJson, sessionId = null) =>
     request(`/forms/${formId}/draft`, {
       method: "POST",
-      body: JSON.stringify({ values_json: valuesJson }),
+      body: JSON.stringify({ values_json: valuesJson, session_id: sessionId || null }),
     }),
-  deleteDraft: (formId) => request(`/forms/${formId}/draft`, { method: "DELETE" }),
+  deleteDraft: (formId, sessionId = null) => {
+    const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+    return request(`/forms/${formId}/draft${query}`, { method: "DELETE" });
+  },
+
+  // Administration & RBAC APIs
+  getAdminStats: () => request("/admin/stats"),
+  getAdminUsers: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return request(`/admin/users${q ? `?${q}` : ""}`);
+  },
+  getAdminUser: (userId) => request(`/admin/users/${userId}`),
+  updateUserStatus: (userId, isActive, reason = null) =>
+    request(`/admin/users/${userId}/status`, {
+      method: "PUT",
+      body: JSON.stringify({ is_active: isActive, reason }),
+    }),
+  updateAdminUserStatus: (userId, isActive, reason = null) =>
+    request(`/admin/users/${userId}/status`, {
+      method: "PUT",
+      body: JSON.stringify({ is_active: isActive, reason }),
+    }),
+  updateUserRole: (userId, role) =>
+    request(`/admin/users/${userId}/role`, {
+      method: "PUT",
+      body: JSON.stringify({ role }),
+    }),
+  getAdminAuditLogs: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return request(`/admin/audit-logs${q ? `?${q}` : ""}`);
+  },
+  getSystemHealth: () => request("/admin/system-health"),
 };

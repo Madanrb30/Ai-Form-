@@ -45,6 +45,9 @@ class ConversationManager:
                             status_code=status.HTTP_403_FORBIDDEN,
                             detail="You do not have permission to access this conversation session."
                         )
+                elif user_id is not None:
+                    existing.user_id = user_id
+                    db.commit()
                 return existing
 
 
@@ -90,7 +93,40 @@ class ConversationManager:
 
         text_lower = transcript.strip().lower()
 
-        # 1. Check for standard voice navigation and control commands
+        # 1. Check for submission confirmation or submit voice commands
+        is_confirm_submit = self._is_submission_confirmation(text_lower, state.get("stage"))
+        if is_confirm_submit:
+            missing_required = self._find_next_missing_field(fields, values, confirmed_fields)
+            if missing_required:
+                resp = f"We cannot submit just yet because your {missing_required.get('label')} is still required. What is your {missing_required.get('label')}?"
+                state["current_field"] = missing_required.get("name")
+                return self._build_response(
+                    session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript
+                )
+            else:
+                return self._execute_submission(
+                    session=session,
+                    db=db,
+                    form=form,
+                    values=values,
+                    confirmed_fields=confirmed_fields,
+                    needs_review=needs_review,
+                    fields=fields,
+                    history=history,
+                    transcript=transcript
+                )
+
+        # Handle user rejection or hold during submission confirmation (when not providing a correction)
+        if state.get("stage") in ("reviewing", "confirming_submission") and any(
+            w in text_lower for w in ["no", "wait", "hold on", "not yet", "cancel", "stop"]
+        ) and not any(w in text_lower for w in ["change", "update", "instead", "replace", "correct"]):
+            resp = "Understood. Which field would you like to review or update?"
+            state["stage"] = "filling"
+            return self._build_response(
+                session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript
+            )
+
+        # 2. Check for standard voice navigation and control commands
         if any(cmd in text_lower for cmd in ["repeat the question", "repeat question", "what was the question", "repeat"]):
             curr = state.get("current_field")
             curr_label = curr
@@ -107,7 +143,7 @@ class ConversationManager:
                 needs_review[curr] = "Skipped by user"
             next_missing = self._find_next_missing_field(fields, values, confirmed_fields)
             state["current_field"] = next_missing.get("name") if next_missing else None
-            resp = f"Skipped. What is your {next_missing.get('label')}?" if next_missing else "All required fields are ready. You can review your form."
+            resp = f"Skipped. What is your {next_missing.get('label')}?" if next_missing else "All required fields are ready. You can review and submit your form."
             return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript)
 
         # 2. Check if user is directly answering the currently focused/prompted field
@@ -203,8 +239,29 @@ class ConversationManager:
             if next_missing:
                 assistant_reply = f"{ack} What is your {next_missing.get('label')}?"
             else:
-                assistant_reply = f"{ack} All required fields are now populated! Would you like to review and submit?"
-                state["stage"] = "reviewing"
+                if any(w in text_lower for w in ["submit", "send it", "finish"]):
+                    return self._execute_submission(
+                        session=session,
+                        db=db,
+                        form=form,
+                        values=values,
+                        confirmed_fields=confirmed_fields,
+                        needs_review=needs_review,
+                        fields=fields,
+                        history=history,
+                        transcript=transcript,
+                        newly_filled=newly_filled
+                    )
+                summary_items = [
+                    f"{f.get('label', f.get('name'))}: {values.get(f.get('name'))}"
+                    for f in fields if f.get('name') in values and values.get(f.get('name'))
+                ]
+                summary_snippet = ", ".join(summary_items[:4])
+                if len(summary_items) > 4:
+                    summary_snippet += f" and {len(summary_items) - 4} more"
+                summary_clause = f" ({summary_snippet})" if summary_snippet else ""
+                assistant_reply = f"{ack} All required fields are now completed{summary_clause}. Would you like to confirm and submit the form now?"
+                state["stage"] = "confirming_submission"
         else:
             # If no fields extracted via deterministic rules, attempt Groq AI interpretation if configured
             if ai_provider.is_groq_configured():
@@ -258,7 +315,8 @@ class ConversationManager:
                 if next_missing:
                     assistant_reply = f"I didn't quite catch that. Could you tell me your {next_missing.get('label')}?"
                 else:
-                    assistant_reply = "I've recorded your responses. Please verify your details in the preview before submitting."
+                    assistant_reply = "All required fields are completed! Would you like to submit the form now?"
+                    state["stage"] = "confirming_submission"
 
         return self._build_response(
             session=session,
@@ -334,6 +392,8 @@ class ConversationManager:
         history: List[Dict[str, Any]],
         user_transcript: str,
         newly_filled: Optional[List[str]] = None,
+        is_submitted: bool = False,
+        submission_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         # Missing required list
         missing = [
@@ -364,6 +424,161 @@ class ConversationManager:
             "needs_review": needs_review,
             "stage": stage,
             "is_completed": len(missing) == 0,
+            "is_submitted": is_submitted,
+            "submission_id": submission_id,
+        }
+
+    def _is_submission_confirmation(self, text_lower: str, current_stage: Optional[str]) -> bool:
+        cleaned = text_lower.strip().lower()
+
+        # Never treat corrections or edits as confirmation even if they start with 'yes' or 'sari'
+        if any(w in cleaned for w in ["change", "update", "replace", "wrong", "instead", "correction", "மாற்று"]):
+            return False
+        if any(re.search(rf"\b{re.escape(w)}\b", cleaned) for w in ["correct this", "correct my", "correct it"]):
+            return False
+
+        # Direct explicit submit command (English, Tamil, and Tanglish)
+        explicit_phrases = [
+            "submit the form", "submit form", "submit it", "submit now",
+            "confirm submit", "confirm submission", "please submit",
+            "go ahead and submit", "proceed to submit", "finish and submit",
+            "submit my response", "submit response", "i want to submit",
+            # Tanglish
+            "submit pannunga", "submit pannidunga", "form submit pannunga",
+            "form-ai submit pannunga", "form ah submit pannunga",
+            "confirm pannunga", "submit pannidalam", "submit pannalam",
+            # Tamil script
+            "சமர்ப்பிக்கவும்", "படிவத்தை சமர்ப்பிக்கவும்", "உறுதிப்படுத்தவும்",
+            "submit பண்ணுங்க", "submit பண்ணிடுங்க", "படிவம் சமர்ப்பி"
+        ]
+        if any(phrase in cleaned for phrase in explicit_phrases):
+            return True
+
+        # Standalone submit or confirm
+        if cleaned in [
+            "submit", "confirm", "yes, submit", "yes submit",
+            "சமர்ப்பி", "உறுதிப்படுத்து"
+        ]:
+            return True
+
+        # Only evaluate affirmative answers if currently in reviewing or confirming_submission stage
+        if current_stage in ("reviewing", "confirming_submission"):
+            affirmative_exact = [
+                # English
+                "yes", "yeah", "yep", "sure", "ok", "okay", "yup",
+                "proceed", "go ahead", "confirm", "yes please",
+                "yes submit", "looks good", "everything is correct", "all good",
+                # Tanglish
+                "aam", "aama", "aamaa", "sari", "seri",
+                "sari submit pannunga", "seri submit pannunga", "ellam sari",
+                "correct ah irukku", "correct-aa irukku", "correct irukku",
+                # Tamil script
+                "ஆமாம்", "ஆம்", "சரி", "சரியாக உள்ளது", "சரி சமர்ப்பிக்கவும்"
+            ]
+            if cleaned in affirmative_exact:
+                return True
+
+            # If user begins with an affirmative word, verify it is a brief confirmation
+            # and not providing a new sentence or field value (max 4 words)
+            affirmative_prefixes = [
+                "yes", "yeah", "yep", "sure", "ok", "okay", "confirm", "submit",
+                "aam", "aama", "sari", "seri", "ஆமாம்", "ஆம்", "சரி"
+            ]
+            words = cleaned.split()
+            if len(words) <= 4 and any(cleaned.startswith(w) for w in affirmative_prefixes):
+                # Ensure no field keywords like email, phone, name are being answered
+                field_hints = ["name", "email", "phone", "address", "dept", "department", "பெயர்", "மின்னஞ்சல்"]
+                if not any(hint in cleaned for hint in field_hints):
+                    return True
+
+        return False
+
+    def _execute_submission(
+        self,
+        session: ConversationSession,
+        db: Session,
+        form: Form,
+        values: Dict[str, Any],
+        confirmed_fields: set,
+        needs_review: Dict[str, str],
+        fields: List[Dict[str, Any]],
+        history: List[Dict[str, Any]],
+        transcript: str,
+        newly_filled: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        from app.models.submission import Submission
+        from app.models.draft import Draft
+        from app.services.pdf_service import generate_completed_pdf
+
+        # 1. Create submission record in database
+        new_sub = Submission(
+            form_id=form.id,
+            user_id=session.user_id,
+            response_json=values,
+        )
+        db.add(new_sub)
+        db.commit()
+        db.refresh(new_sub)
+
+        # 2. Generate publication-ready PDF in background (failsafe)
+        try:
+            pdf_path = generate_completed_pdf(
+                form_title=form.title,
+                form_description=form.description,
+                fields_schema=fields,
+                response_data=values,
+                submission_id=new_sub.id,
+                original_pdf_path=form.original_document_path,
+            )
+            new_sub.generated_pdf_path = pdf_path
+            db.commit()
+        except Exception as e:
+            logger.warning(f"Could not generate PDF for conversational submission {new_sub.id}: {e}")
+
+        # 3. Clean up database drafts for this user/session
+        try:
+            draft_q = db.query(Draft).filter(Draft.form_id == form.id)
+            if session.user_id:
+                drafts = draft_q.filter(Draft.user_id == session.user_id).all()
+            elif session.id:
+                drafts = draft_q.filter(Draft.user_id.is_(None), Draft.session_id == session.id).all()
+            else:
+                drafts = []
+            for d in drafts:
+                db.delete(d)
+            db.commit()
+        except Exception as d_err:
+            logger.warning(f"Could not clear draft after conversational submission: {d_err}")
+
+        reply = f"Your form has been successfully submitted! Your response has been recorded with submission ID #{new_sub.id}. You can download your completed PDF now."
+
+        history.append({"user": transcript, "assistant": reply})
+        if len(history) > 20:
+            history = history[-20:]
+
+        session.state_json = {
+            "values": values,
+            "confirmed_fields": list(confirmed_fields),
+            "needs_review": needs_review,
+            "history": history,
+            "stage": "submitted",
+        }
+        db.commit()
+
+        logger.info(f"Conversational form submission created: Submission {new_sub.id} for Form {form.id} by user {session.user_id}")
+
+        return {
+            "session_id": session.id,
+            "assistant_response": reply,
+            "updated_values": values,
+            "newly_filled": newly_filled or [],
+            "confirmed_fields": list(confirmed_fields),
+            "missing_fields": [],
+            "needs_review": needs_review,
+            "stage": "submitted",
+            "is_completed": True,
+            "is_submitted": True,
+            "submission_id": new_sub.id,
         }
 
 

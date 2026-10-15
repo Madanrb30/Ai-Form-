@@ -90,8 +90,8 @@ export default function SubmissionsPage({ formId, formTitle, setView }) {
           >
             <ArrowLeft className="w-4 h-4" />
           </button>
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-neutral-900">
+          <div className="min-w-0">
+            <h1 className="text-xl font-bold tracking-tight text-neutral-900 break-words">
               {form?.title || "Form"} Submissions
             </h1>
             <p className="text-xs text-[#737373] mt-0.5">
@@ -100,7 +100,7 @@ export default function SubmissionsPage({ formId, formTitle, setView }) {
           </div>
         </div>
 
-        <div className="flex items-center space-x-2">
+        <div className="flex flex-wrap items-center gap-2">
           {submissions.length > 0 && (
             <button
               onClick={handleExportCsv}

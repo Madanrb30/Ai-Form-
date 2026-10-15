@@ -55,10 +55,10 @@ export default function FormRenderer({
             }`}
           >
             {/* Field Header */}
-            <div className="flex justify-between items-center mb-1.5">
+            <div className="flex flex-wrap justify-between items-center gap-1.5 mb-1.5">
               <label
                 htmlFor={`field-${field.name}`}
-                className="text-xs font-semibold text-neutral-900 flex items-center space-x-1.5"
+                className="text-xs font-semibold text-neutral-900 flex items-center space-x-1.5 break-words"
               >
                 <span>{field.label}</span>
                 {field.required && (

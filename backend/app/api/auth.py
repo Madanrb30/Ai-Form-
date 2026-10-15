@@ -41,14 +41,16 @@ def register(req: UserRegisterRequest, db: Session = Depends(get_db)):
         email=email_clean,
         hashed_password=get_password_hash(req.password),
         full_name=name,
-        role="User",
+        role="USER",
         avatar=initials or "U",
+        is_active=True,
+        token_version=1,
     )
     db.add(user)
     db.commit()
     db.refresh(user)
 
-    token = create_access_token(user.id)
+    token = create_access_token(user.id, role=user.role, token_version=user.token_version)
     return AuthTokenResponse(token=token, user=UserResponse.model_validate(user))
 
 
@@ -70,8 +72,14 @@ def login(req: UserLoginRequest, db: Session = Depends(get_db)):
             detail="Incorrect email or password."
         )
 
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account has been suspended. Please contact an administrator."
+        )
+
     clear_login_attempts(email_clean)
-    token = create_access_token(user.id)
+    token = create_access_token(user.id, role=user.role, token_version=user.token_version)
     return AuthTokenResponse(token=token, user=UserResponse.model_validate(user))
 
 

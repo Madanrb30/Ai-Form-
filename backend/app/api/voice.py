@@ -32,11 +32,12 @@ async def transcribe_speech(
     file: UploadFile = File(...),
     language: Optional[str] = Form(default=None),
     prompt: Optional[str] = Form(default=None),
+    provider: Optional[str] = Form(default=None),
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
     """
-    Cloud-based speech-to-text audio transcription using Groq's hosted whisper-large-v3-turbo API.
-    Zero local AI inference (lightweight, runs completely on Groq cloud infrastructure).
+    Cloud-based speech-to-text audio transcription using configured provider (Groq Whisper or Sarvam AI).
+    Zero local AI inference (lightweight, runs completely on cloud infrastructure).
     """
     filename = file.filename or "recording.webm"
     ext = os.path.splitext(filename)[1].lower()
@@ -83,6 +84,7 @@ async def transcribe_speech(
             content_type=content_type,
             language=language,
             prompt=prompt,
+            provider_name=provider,
         )
         return TranscriptionResponse(**result)
     except AIProviderError as e:

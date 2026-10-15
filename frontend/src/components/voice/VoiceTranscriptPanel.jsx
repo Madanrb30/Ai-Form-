@@ -59,7 +59,7 @@ export default function VoiceTranscriptPanel({
               </div>
             )}
             <div
-              className={`max-w-[85%] px-3.5 py-2.5 rounded-xl text-left leading-relaxed ${
+              className={`max-w-[85%] px-3.5 py-2.5 rounded-xl text-left leading-relaxed break-words ${
                 msg.role === "user"
                   ? "bg-[#111111] text-white rounded-br-xs"
                   : "bg-[#F7F7F7] text-neutral-900 border border-[#E5E5E5] rounded-bl-xs"

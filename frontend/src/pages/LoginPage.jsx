@@ -35,10 +35,10 @@ export default function LoginPage({ setView }) {
     setLoading(true);
     try {
       if (isRegisterMode) {
-        register(name, email, password);
+        await register(name, email, password);
         toast("Account created successfully. Welcome!", "success");
       } else {
-        login(email, password, rememberMe);
+        await login(email, password, rememberMe);
         toast("Signed in successfully.", "success");
       }
       setView({ name: "dashboard" });
@@ -50,9 +50,7 @@ export default function LoginPage({ setView }) {
   };
 
   const handleGoogleAuth = () => {
-    toast("Google Auth SSO simulated with secure local credentials.", "info");
-    login("madan@example.com", "google-oauth-token", true);
-    setView({ name: "dashboard" });
+    toast("Google OAuth SSO is not configured in this local environment. Please sign in with email and password.", "info");
   };
 
   return (

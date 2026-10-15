@@ -10,16 +10,18 @@ import {
 import { api } from "../services/api";
 import { storageService } from "../services/storageService";
 import { useToast } from "../context/ToastContext";
+import { useAuth } from "../context/AuthContext";
 import Modal from "../components/common/Modal";
 
-export default function ReviewFormPage({ formId, values = {}, setView }) {
+export default function ReviewFormPage({ formId, values = {}, setView, initialSubmissionSuccess = null }) {
+  const { user } = useAuth();
   const { toast } = useToast();
 
   const [form, setForm] = useState(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [validationErrors, setValidationErrors] = useState([]);
-  const [submissionSuccess, setSubmissionSuccess] = useState(null);
+  const [submissionSuccess, setSubmissionSuccess] = useState(initialSubmissionSuccess || null);
   const [submitModalOpen, setSubmitModalOpen] = useState(false);
 
   useEffect(() => {
@@ -98,7 +100,7 @@ export default function ReviewFormPage({ formId, values = {}, setView }) {
       const response = await api.createSubmission(formId, values);
       setSubmissionSuccess(response);
       // Clean up local draft since form has been officially submitted
-      storageService.deleteDraft(formId);
+      storageService.deleteDraft(formId, user?.id);
       toast("Form response submitted and saved successfully!", "success");
     } catch (err) {
       if (err.details && Array.isArray(err.details)) {
@@ -224,8 +226,8 @@ export default function ReviewFormPage({ formId, values = {}, setView }) {
           >
             <ArrowLeft className="w-4 h-4" />
           </button>
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-neutral-900">
+          <div className="min-w-0">
+            <h1 className="text-xl font-bold tracking-tight text-neutral-900 break-words">
               Review Your Form
             </h1>
             <p className="text-xs text-[#737373] mt-0.5">
@@ -234,7 +236,7 @@ export default function ReviewFormPage({ formId, values = {}, setView }) {
           </div>
         </div>
 
-        <div className="flex items-center space-x-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() =>
               setView({
@@ -351,7 +353,7 @@ export default function ReviewFormPage({ formId, values = {}, setView }) {
       </div>
 
       {/* Bottom Submit Action */}
-      <div className="mt-8 pt-6 border-t border-[#E5E5E5] flex items-center justify-between">
+      <div className="mt-8 pt-6 border-t border-[#E5E5E5] flex flex-wrap items-center justify-between gap-3">
         <button
           onClick={() =>
             setView({

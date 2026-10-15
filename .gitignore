@@ -6,6 +6,8 @@ __pycache__/
 *$py.class
 *.sqlite
 *.db
+*.db.*
+*.backup*
 .pytest_cache/
 .coverage
 htmlcov/

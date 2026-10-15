@@ -12,10 +12,18 @@ MONTH_NAMES = {
     "june": "06", "jun": "06",
     "july": "07", "jul": "07",
     "august": "08", "aug": "08",
-    "september": "09", "sep": "09", "sept": "09",
-    "october": "10", "oct": "10",
-    "november": "11", "nov": "11",
-    "december": "12", "dec": "12",
+    "september": "09", "sep": "09", "sept": "09", "செப்டம்பர்": "09", "septembar": "09",
+    "october": "10", "oct": "10", "அக்டோபர்": "10", "akdobar": "10",
+    "november": "11", "nov": "11", "நவம்பர்": "11", "navambar": "11",
+    "december": "12", "dec": "12", "டிசம்பர்": "12", "disambar": "12",
+    "january": "01", "jan": "01", "ஜனவரி": "01", "janavari": "01",
+    "february": "02", "feb": "02", "பிப்ரவரி": "02", "pebravari": "02",
+    "march": "03", "mar": "03", "மார்ச்": "03", "maarss": "03",
+    "april": "04", "apr": "04", "ஏப்ரல்": "04", "epral": "04",
+    "may": "05", "மே": "05", "mey": "05",
+    "june": "06", "jun": "06", "ஜூன்": "06", "joon": "06",
+    "july": "07", "jul": "07", "ஜூலை": "07", "joolai": "07",
+    "august": "08", "aug": "08", "ஆகஸ்ட்": "08", "aagast": "08",
 }
 
 WORD_NUMBERS = {
@@ -25,11 +33,57 @@ WORD_NUMBERS = {
     "fourteen": "14", "fifteen": "15", "sixteen": "16", "seventeen": "17",
     "eighteen": "18", "nineteen": "19", "twenty": "20", "thirty": "30",
     "forty": "40", "fifty": "50",
+    # Tanglish transliteration numbers
+    "poojiyam": "0", "poojyam": "0", "suzhiyam": "0",
+    "onnu": "1", "ondru": "1", "oru": "1",
+    "rendu": "2", "irandu": "2",
+    "moonu": "3", "moondru": "3",
+    "naalu": "4", "naangu": "4",
+    "anju": "5", "aindhu": "5",
+    "aaru": "6",
+    "ezhu": "7", "yelu": "7",
+    "ettu": "8",
+    "ombodhu": "9", "onbadhu": "9", "onbathu": "9",
+    "patthu": "10", "pathu": "10",
+    # Tamil Unicode digits
+    "பூஜ்யம்": "0", "சுழியம்": "0",
+    "ஒன்று": "1", "ஒன்னு": "1",
+    "இரண்டு": "2", "ரெண்டு": "2",
+    "மூன்று": "3", "மூனு": "3",
+    "நான்கு": "4", "நாலு": "4",
+    "ஐந்து": "5", "அஞ்சு": "5",
+    "ஆறு": "6",
+    "ஏழு": "7",
+    "எட்டு": "8",
+    "ஒன்பது": "9", "ஒம்போது": "9",
+    "பத்து": "10",
 }
 
 DIGIT_WORDS = {
     "zero": "0", "oh": "0", "one": "1", "two": "2", "three": "3", "four": "4",
-    "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9"
+    "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
+    # Tanglish digit words
+    "poojiyam": "0", "poojyam": "0", "suzhiyam": "0",
+    "onnu": "1", "ondru": "1", "oru": "1",
+    "rendu": "2", "irandu": "2",
+    "moonu": "3", "moondru": "3",
+    "naalu": "4", "naangu": "4",
+    "anju": "5", "aindhu": "5",
+    "aaru": "6",
+    "ezhu": "7", "yelu": "7",
+    "ettu": "8",
+    "ombodhu": "9", "onbadhu": "9", "onbathu": "9",
+    # Tamil Unicode digits
+    "பூஜ்யம்": "0", "சுழியம்": "0",
+    "ஒன்று": "1", "ஒன்னு": "1",
+    "இரண்டு": "2", "ரெண்டு": "2",
+    "மூன்று": "3", "மூனு": "3",
+    "நான்கு": "4", "நாலு": "4",
+    "ஐந்து": "5", "அஞ்சு": "5",
+    "ஆறு": "6",
+    "ஏழு": "7",
+    "எட்டு": "8",
+    "ஒன்பது": "9", "ஒம்போது": "9",
 }
 
 STANDARD_OPTION_ALIASES = {
@@ -43,6 +97,8 @@ STANDARD_OPTION_ALIASES = {
         "aids",
         "ai and ds",
         "artificial intelligence",
+        "செயற்கை நுண்ணறிவு",
+        "செயற்கை நுண்ணறிவு மற்றும் தரவு அறிவியல்",
     ],
     "cse": [
         "computer science and engineering",
@@ -50,12 +106,15 @@ STANDARD_OPTION_ALIASES = {
         "computer science",
         "cs",
         "comp sci",
+        "கணினி அறிவியல்",
+        "கணினி பொறியியல்",
     ],
     "ece": [
         "electronics and communication engineering",
         "electronics and communication",
         "electronics & communication engineering",
         "electronics & communication",
+        "மின்னணு மற்றும் தகவல் தொடர்பு பொறியியல்",
     ],
     "eee": [
         "electrical and electronics engineering",
@@ -64,17 +123,21 @@ STANDARD_OPTION_ALIASES = {
     ],
     "it": [
         "information technology",
+        "தகவல் தொழில்நுட்பம்",
     ],
     "mech": [
         "mechanical engineering",
         "mechanical",
+        "இயந்திரவியல்",
     ],
     "mechanical": [
         "mechanical engineering",
         "mech",
+        "இயந்திரவியல்",
     ],
     "civil": [
         "civil engineering",
+        "கட்டுமான பொறியியல்",
     ],
     # Degrees
     "btech": ["b tech", "bachelor of technology"],
@@ -87,14 +150,19 @@ STANDARD_OPTION_ALIASES = {
     "qa": ["quality assurance", "qa engineer", "tester"],
     "hr": ["human resources"],
     # General
-    "male": ["man", "boy", "m"],
-    "female": ["woman", "girl", "f"],
+    "male": ["man", "boy", "m", "ஆண்", "aan"],
+    "female": ["woman", "girl", "f", "பெண்", "pen"],
 }
 
 STOPWORDS = {
     "i", "belong", "to", "my", "department", "dept", "branch", "stream", "is",
     "choose", "select", "please", "for", "the", "a", "an", "entered", "as", "set",
-    "should", "be"
+    "should", "be",
+    # Tamil & Tanglish conversational fillers and particles
+    "enoda", "ennoda", "ennudaiya", "en", "peyar", "per", "ooru", "oor",
+    "iruken", "irukom", "la", "ku", "kaga", "pannunga", "pannidunga", "podunga",
+    "vechuko", "veikavum", "kudukanum", "kudu", "solren", "solran", "sollunga",
+    "சொல்லுங்க", "பெயர்", "ஊர்", "பண்ணுங்க", "போடுங்க", "என்", "என்னுடைய"
 }
 
 
@@ -133,10 +201,10 @@ def parse_spoken_date(date_str: str) -> Optional[str]:
 
 
 def clean_for_matching(text: str) -> str:
-    """Normalizes text for robust matching."""
+    """Normalizes text for robust matching while preserving Tamil Unicode script."""
     t = text.lower().replace("&", " and ")
     t = re.sub(r"[/\\_-]", " ", t)
-    t = re.sub(r"[^a-z0-9\s]", "", t)
+    t = re.sub(r"[^a-z0-9\u0B80-\u0BFF\s]", "", t)
     return re.sub(r"\s+", " ", t).strip()
 
 
@@ -239,11 +307,18 @@ def match_dropdown_option(spoken: str, options: List[str]) -> Tuple[Optional[str
             )
             if is_opt_in_group:
                 patterns = [
-                    re.escape(canon_key),
-                    re.escape(canon_key.replace("&", " and ")),
-                ] + [re.escape(clean_for_matching(a)) for a in alias_list]
+                    canon_key,
+                    canon_key.replace("&", " and "),
+                ] + [clean_for_matching(a) for a in alias_list]
                 for p in patterns:
-                    if re.search(rf"\b{p}\b", cleaned_spoken) or re.search(rf"\b{p}\b", spoken.lower()):
+                    if not p:
+                        continue
+                    if (
+                        p == cleaned_spoken
+                        or f" {p} " in f" {cleaned_spoken} "
+                        or re.search(rf"(?:\b|^){re.escape(p)}(?:\b|$)", cleaned_spoken)
+                        or re.search(rf"(?:\b|^){re.escape(p)}(?:\b|$)", spoken.lower())
+                    ):
                         matches.add(opt)
                         break
 

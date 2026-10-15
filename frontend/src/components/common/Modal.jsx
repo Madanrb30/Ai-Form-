@@ -31,7 +31,7 @@ export default function Modal({ isOpen, onClose, title, children, maxWidth = "ma
         className={`relative bg-white border border-[#E5E5E5] rounded-xl shadow-2xl w-full ${maxWidth} z-10 p-6 text-left transform transition-all animate-in fade-in zoom-in-95 duration-150`}
       >
         <div className="flex items-center justify-between pb-3 border-b border-[#E5E5E5] mb-4">
-          <h3 className="text-sm font-semibold text-neutral-900 tracking-tight">
+          <h3 className="text-sm font-semibold text-neutral-900 tracking-tight break-words pr-2">
             {title}
           </h3>
           <button
