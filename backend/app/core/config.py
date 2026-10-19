@@ -36,11 +36,12 @@ class Settings(BaseSettings):
     # AI Configuration (Groq is the primary provider)
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_FALLBACK_MODEL: str = "qwen/qwen3.8-27b"
     GROQ_VISION_MODEL: str = "qwen/qwen3.8-27b"
     GROQ_TRANSCRIPTION_MODEL: str = "whisper-large-v3-turbo"
 
-    # Configurable Speech-to-Text (STT) Providers
-    STT_PROVIDER: str = "groq"  # "groq" or "sarvam"
+    # Configurable Speech-to-Text (STT) Providers (Sarvam AI primary, Groq Whisper alternative)
+    STT_PROVIDER: str = "sarvam"  # "sarvam" or "groq"
     GROQ_STT_MODEL: str = "whisper-large-v3-turbo"  # "whisper-large-v3-turbo" or "whisper-large-v3"
     GROQ_STT_LANGUAGE: Optional[str] = None  # None for auto-detect; or "ta", "en"
     GROQ_STT_TEMPERATURE: float = 0.0
@@ -72,6 +73,7 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
     SEED_DEMO_USER: bool = False  # Disabled by default; prohibited in production
+    GOOGLE_CLIENT_ID: Optional[str] = ""
 
     # One-Time Super Admin Bootstrap
     BOOTSTRAP_SECRET_KEY: str = ""

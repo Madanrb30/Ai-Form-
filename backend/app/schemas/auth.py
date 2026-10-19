@@ -13,6 +13,10 @@ class UserLoginRequest(BaseModel):
     password: str = Field(..., min_length=1, max_length=128)
 
 
+class GoogleLoginRequest(BaseModel):
+    credential: str = Field(..., min_length=10, description="Google OAuth ID Token credential")
+
+
 
 class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)

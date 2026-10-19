@@ -64,6 +64,43 @@ export const authService = {
     return user;
   },
 
+  async loginWithGoogle(credential, remember = true) {
+    if (!credential) {
+      throw new Error("Google credential is required.");
+    }
+
+    const res = await api.loginWithGoogle(credential);
+    if (!res || !res.token) {
+      throw new Error("Google authentication failed: No access token received from server.");
+    }
+
+    const resUser = res.user || {};
+    const name = resUser.full_name || resUser.email?.split("@")[0] || "User";
+    const words = name.trim().split(/\s+/);
+    const initials = resUser.avatar || (words.length > 1
+      ? (words[0][0] + words[1][0]).toUpperCase()
+      : name.slice(0, 2).toUpperCase());
+
+    const user = {
+      id: String(resUser.id || ""),
+      name: name,
+      email: resUser.email || "",
+      role: resUser.role || "USER",
+      avatar: initials,
+      token: res.token,
+    };
+
+    if (remember) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
+      sessionStorage.removeItem(STORAGE_KEY);
+    } else {
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(user));
+      localStorage.removeItem(STORAGE_KEY);
+    }
+
+    return user;
+  },
+
   async register(name, email, password) {
     if (!name || !name.trim()) {
       throw new Error("Name is required.");
