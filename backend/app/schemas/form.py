@@ -40,6 +40,40 @@ class FormFieldSchema(BaseModel):
         description="Whether this field represents an alphanumeric identifier (register number, student ID, roll number, postal code, phone, etc.)"
     )
 
+    @field_validator("type", mode="before")
+    @classmethod
+    def normalize_type(cls, v: Any) -> str:
+        if not v or not isinstance(v, str):
+            return "text"
+        v_clean = v.strip().lower()
+        mapping = {
+            "string": "text",
+            "str": "text",
+            "phone": "text",
+            "tel": "text",
+            "mobile": "text",
+            "url": "text",
+            "file": "text",
+            "int": "number",
+            "integer": "number",
+            "float": "number",
+            "decimal": "number",
+            "dropdown": "select",
+            "choice": "select",
+            "combobox": "select",
+            "boolean": "checkbox",
+            "bool": "checkbox",
+            "multi-line": "textarea",
+            "multiline": "textarea",
+            "paragraph": "textarea",
+            "datetime": "date",
+            "time": "text",
+        }
+        mapped = mapping.get(v_clean, v_clean)
+        if mapped not in ("text", "email", "number", "date", "textarea", "select", "checkbox", "radio"):
+            return "text"
+        return mapped
+
     @field_validator("name")
     @classmethod
     def validate_name(cls, v: str) -> str:
@@ -49,16 +83,21 @@ class FormFieldSchema(BaseModel):
         if not clean:
             clean = "field"
         if not re.match(r"^[a-z0-9_]{1,64}$", clean):
-            raise ValueError("Field name must contain only letters, numbers, and underscores (max 64 chars)")
+            clean = clean[:64].rstrip("_") or "field"
         return clean
 
-    @field_validator("label")
+    @field_validator("label", mode="before")
     @classmethod
-    def validate_label(cls, v: str) -> str:
-        v = v.strip()
-        if not v or len(v) > 128:
-            raise ValueError("Field label must be between 1 and 128 characters")
-        return v
+    def validate_label(cls, v: Any) -> str:
+        if v is None:
+            return "Field"
+        v_str = str(v).strip()
+        if not v_str:
+            return "Field"
+        if len(v_str) > 128:
+            v_str = v_str[:128].strip()
+        return v_str
+
 
     @model_validator(mode="after")
     def validate_choice_options(self):
@@ -263,6 +302,8 @@ class ConversationTurnResponse(BaseModel):
     is_completed: bool
     is_submitted: bool = False
     submission_id: Optional[int] = None
+    cleared_fields: List[str] = Field(default_factory=list, description="Fields explicitly cleared in this turn")
+    intent: Optional[str] = Field(default=None, description="Classified intent of the utterance")
 
 
 class DraftSaveRequest(BaseModel):
@@ -291,4 +332,24 @@ class DocumentExtractResponse(BaseModel):
     extraction_strategy: Optional[str] = Field(default="digital_text", description="Strategy used: digital_text, acroform, groq_vision, or hybrid")
     pages_processed: Optional[int] = Field(default=1, description="Number of pages processed")
     uncertain_fields_count: Optional[int] = Field(default=0, description="Number of fields flagged as ambiguous/uncertain")
+
+
+class PdfExtractAndMapResponse(BaseModel):
+    form_id: int
+    extracted_fields: Dict[str, Any]
+    confidence_scores: Dict[str, float] = Field(default_factory=dict)
+    source_evidence: Dict[str, str] = Field(default_factory=dict)
+    needs_review: Dict[str, str] = Field(default_factory=dict)
+    missing_required_fields: List[str] = Field(default_factory=list)
+    all_missing_fields: List[str] = Field(default_factory=list)
+    merged_values: Dict[str, Any] = Field(default_factory=dict)
+    total_matched: int
+    total_fields: int
+    message: str
+    extraction_strategy: str = "digital_text"
+    pages_processed: int = 1
+
+
+class FormExportPdfRequest(BaseModel):
+    values: Dict[str, Any] = Field(default_factory=dict, description="Form values to render in exported PDF")
 
