@@ -119,6 +119,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ full_name: fullName, email, password }),
     }),
+  loginWithGoogle: (credential) =>
+    request("/auth/google", {
+      method: "POST",
+      body: JSON.stringify({ credential }),
+    }),
   getMe: () => request("/auth/me"),
 
   // Form Creation & Management
@@ -159,16 +164,73 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ response_json: responseJson }),
     }),
-  getSubmissions: (formId) => request(`/forms/${formId}/submissions`),
+  getSubmissions: (formId, filters = {}) => {
+    const params = new URLSearchParams();
+    if (filters.search) params.append("search", filters.search);
+    if (filters.startDate) params.append("start_date", filters.startDate);
+    if (filters.endDate) params.append("end_date", filters.endDate);
+    if (filters.status) params.append("status_filter", filters.status);
+    const qStr = params.toString() ? `?${params.toString()}` : "";
+    return request(`/forms/${formId}/submissions${qStr}`);
+  },
+  exportSubmissionsExcel: async (formId, filters = {}, filename = null) => {
+    const token = getStoredToken();
+    const params = new URLSearchParams();
+    if (filters.search) params.append("search", filters.search);
+    if (filters.startDate) params.append("start_date", filters.startDate);
+    if (filters.endDate) params.append("end_date", filters.endDate);
+    if (filters.status) params.append("status_filter", filters.status);
+    if (token) params.append("token", token);
+
+    const qStr = params.toString() ? `?${params.toString()}` : "";
+    const url = `${API_BASE}/forms/${formId}/export-excel${qStr}`;
+    const headers = {
+      Accept: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    };
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+
+    const res = await fetch(url, { headers });
+    if (!res.ok) {
+      let errMsg = `Failed to export Excel (${res.status})`;
+      try {
+        const errData = await res.json();
+        if (errData?.detail) {
+          errMsg = typeof errData.detail === "string" ? errData.detail : JSON.stringify(errData.detail);
+        }
+      } catch {
+        // use default error message
+      }
+      throw new ApiError(errMsg, res.status);
+    }
+
+    const blob = await res.blob();
+    const blobUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = blobUrl;
+    link.download = filename || `Form_${formId}_Submissions.xlsx`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => {
+      window.URL.revokeObjectURL(blobUrl);
+    }, 1000);
+  },
+  getUserSubmissions: () => request("/forms/user/submissions"),
   getSubmissionPdfUrl: (formId, subId) => {
     const token = getStoredToken();
     const query = token ? `?token=${encodeURIComponent(token)}` : "";
-    return `${API_BASE}/forms/${formId}/submissions/${subId}/pdf${query}`;
+    return formId
+      ? `${API_BASE}/forms/${formId}/submissions/${subId}/pdf${query}`
+      : `${API_BASE}/forms/submissions/${subId}/pdf${query}`;
   },
   downloadSubmissionPdf: async (formId, subId, filename = null) => {
     const token = getStoredToken();
     const query = token ? `?token=${encodeURIComponent(token)}` : "";
-    const url = `${API_BASE}/forms/${formId}/submissions/${subId}/pdf${query}`;
+    const url = formId
+      ? `${API_BASE}/forms/${formId}/submissions/${subId}/pdf${query}`
+      : `${API_BASE}/forms/submissions/${subId}/pdf${query}`;
     const headers = {};
     if (token) {
       headers["Authorization"] = `Bearer ${token}`;
@@ -198,11 +260,75 @@ export const api = {
       window.URL.revokeObjectURL(blobUrl);
     }, 1000);
   },
-
-  // Cloud Speech-to-Text Transcription (Groq Whisper, Sarvam AI)
-  transcribeAudio: (audioBlob, { filename = "recording.webm", language = null, provider = null, prompt = null } = {}) => {
+  exportFormPdf: async (formId, values, filename = null) => {
+    const token = getStoredToken();
+    const url = `${API_BASE}/forms/${formId}/export-pdf`;
+    const headers = {
+      "Content-Type": "application/json",
+      Accept: "application/pdf",
+    };
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+    const res = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ values: values || {} }),
+    });
+    if (!res.ok) {
+      let errMsg = `Failed to export PDF (${res.status})`;
+      try {
+        const errData = await res.json();
+        if (errData?.detail) {
+          errMsg = typeof errData.detail === "string" ? errData.detail : JSON.stringify(errData.detail);
+        }
+      } catch {
+        // use default error message
+      }
+      throw new ApiError(errMsg, res.status);
+    }
+    const blob = await res.blob();
+    const blobUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = blobUrl;
+    link.download = filename || `form_${formId}_completed.pdf`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => {
+      window.URL.revokeObjectURL(blobUrl);
+    }, 1000);
+  },
+  extractPdfForForm: (formId, file, options = {}) => {
     const formData = new FormData();
-    formData.append("file", audioBlob, filename);
+    formData.append("file", file);
+    return request(`/forms/${formId}/extract-pdf`, {
+      method: "POST",
+      body: formData,
+      signal: options.signal,
+      timeout: options.timeout || 60000,
+    });
+  },
+
+  // Cloud Speech-to-Text Transcription (Sarvam AI, Groq Whisper)
+  transcribeAudio: (audioBlob, { filename = null, language = null, provider = null, prompt = null } = {}) => {
+    const formData = new FormData();
+    let effectiveFilename = filename;
+    if (!effectiveFilename) {
+      const cleanType = (audioBlob?.type || "").split(";")[0].trim().toLowerCase();
+      if (cleanType === "audio/wav" || cleanType === "audio/x-wav") {
+        effectiveFilename = "recording.wav";
+      } else if (cleanType === "audio/ogg") {
+        effectiveFilename = "recording.ogg";
+      } else if (cleanType === "audio/mp4" || cleanType === "video/mp4") {
+        effectiveFilename = "recording.mp4";
+      } else if (cleanType === "audio/mpeg" || cleanType === "audio/mp3") {
+        effectiveFilename = "recording.mp3";
+      } else {
+        effectiveFilename = "recording.webm";
+      }
+    }
+    formData.append("file", audioBlob, effectiveFilename);
     if (language) {
       formData.append("language", language);
     }
