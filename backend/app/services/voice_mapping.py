@@ -383,6 +383,11 @@ def map_transcript_to_fields(transcript: str, schema: Dict[str, Any]) -> Dict[st
     if is_inquiry and not is_explicit_cmd:
         return {}
 
+    # Guard: Clear/remove/delete/empty field commands must never be extracted as field value assignments
+    from app.services.intent_service import is_clear_command, is_command_sentence
+    if is_clear_command(t_clean):
+        return {}
+
     # Build field aliases and search tokens
     field_metadata = []
     for f in fields:
@@ -530,6 +535,10 @@ def map_transcript_to_fields(transcript: str, schema: Dict[str, Any]) -> Dict[st
         ftype = fmeta["type"]
         is_ident = fmeta["is_identifier"]
 
+        # Reject if the extracted value itself is a command sentence or instruction
+        if is_command_sentence(str(orig_val)):
+            continue
+
         # Reject if the extracted value itself is a question or conversational inquiry
         if "?" in str(orig_val) or any(phrase in str(orig_val).lower() for phrase in [
             "feel like", "feels like", "look like", "looks like", "sound like", "like a name", "is valid", "valid or not", "is correct"
@@ -543,7 +552,11 @@ def map_transcript_to_fields(transcript: str, schema: Dict[str, Any]) -> Dict[st
         # Type conversion & normalization
         if is_ident:
             # Preserve letters, digits, leading zeros, meaningful separators as string
-            orig_val = normalize_spoken_identifier(orig_val)
+            norm_id = normalize_spoken_identifier(orig_val)
+            # An identifier must be a valid alphanumeric token, NOT an English sentence with spaces/punctuation
+            if not re.match(r"^[A-Za-z0-9_\-\+]+$", norm_id):
+                continue
+            orig_val = norm_id
 
         elif ftype == "number":
             # True quantitative number field

@@ -64,6 +64,13 @@ export function AuthProvider({ children }) {
     return loggedInUser;
   };
 
+  const loginWithGoogle = async (credential, remember = true) => {
+    const loggedInUser = await authService.loginWithGoogle(credential, remember);
+    setUser(loggedInUser);
+    setIsAuthenticated(true);
+    return loggedInUser;
+  };
+
   const register = async (name, email, password) => {
     const newUser = await authService.register(name, email, password);
     setUser(newUser);
@@ -97,6 +104,7 @@ export function AuthProvider({ children }) {
         isAuthenticated,
         loading,
         login,
+        loginWithGoogle,
         register,
         logout,
         updateProfile,

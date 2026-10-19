@@ -66,7 +66,7 @@ def auth_user(db_session):
         email="test_owner@example.com",
         hashed_password=get_password_hash("password123"),
         full_name="Test Owner",
-        role="User",
+        role="USER",
         avatar="TO",
     )
     db_session.add(user)
@@ -77,5 +77,37 @@ def auth_user(db_session):
 
 @pytest.fixture(scope="function")
 def auth_headers(auth_user):
-    token = create_access_token(auth_user.id)
+    token = create_access_token(auth_user.id, role=auth_user.role)
     return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture(scope="function")
+def admin_user(db_session):
+    user = User(
+        email="admin_owner@example.com",
+        hashed_password=get_password_hash("password123"),
+        full_name="Admin Owner",
+        role="ADMIN",
+        avatar="AO",
+    )
+    db_session.add(user)
+    db_session.commit()
+    db_session.refresh(user)
+    return user
+
+
+@pytest.fixture(scope="function")
+def admin_headers(admin_user):
+    token = create_access_token(admin_user.id, role=admin_user.role)
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture(scope="function")
+def regular_user(auth_user):
+    return auth_user
+
+
+@pytest.fixture(scope="function")
+def user_headers(auth_headers):
+    return auth_headers
+

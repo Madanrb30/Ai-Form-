@@ -1,6 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { api } from "../services/api";
 
+export const MAX_RECORDING_SECONDS = 28; // Safe ceiling below Sarvam's strict 30.0s sync limit
+export const WARNING_THRESHOLD_SECONDS = 22; // Early warning threshold for user wrap-up
+
 export function useVoiceRecognition() {
   const [isSupported] = useState(() => {
     return (
@@ -26,6 +29,7 @@ export function useVoiceRecognition() {
   const timerRef = useRef(null);
   const isCancelledRef = useRef(false);
   const isTranscribingRef = useRef(false);
+  const stopListeningRef = useRef(null);
 
   // Web Audio API for Voice Activity / Silence Detection
   const audioContextRef = useRef(null);
@@ -97,14 +101,22 @@ export function useVoiceRecognition() {
 
   const stopListening = useCallback(() => {
     cleanupAudioNodes();
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
       try {
+        // Request any buffered audio data from encoder before stopping
+        if (typeof mediaRecorderRef.current.requestData === "function") {
+          mediaRecorderRef.current.requestData();
+        }
         mediaRecorderRef.current.stop();
-      } catch {
-        // ignore
+      } catch (err) {
+        console.warn("Error stopping MediaRecorder:", err);
       }
     }
   }, [cleanupAudioNodes]);
+
+  useEffect(() => {
+    stopListeningRef.current = stopListening;
+  }, [stopListening]);
 
   const startListening = useCallback(async (options = {}) => {
     const { autoStopOnSilence = false, silenceDuration = 1800 } = options;
@@ -182,9 +194,13 @@ export function useVoiceRecognition() {
       const mediaRecorder = new MediaRecorder(stream, recorderOptions);
       mediaRecorderRef.current = mediaRecorder;
 
+      // Isolated session chunk collection to prevent stale audio data on repeated recordings
+      const sessionChunks = [];
+      audioChunksRef.current = sessionChunks;
+
       mediaRecorder.ondataavailable = (event) => {
         if (event.data && event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
+          sessionChunks.push(event.data);
         }
       };
 
@@ -210,25 +226,36 @@ export function useVoiceRecognition() {
           setIsTranscribing(false);
           setInterimTranscript("");
           isTranscribingRef.current = false;
+          sessionChunks.length = 0;
+          audioChunksRef.current = [];
           return;
         }
 
-        const audioBlob = new Blob(audioChunksRef.current, {
+        // Snapshot complete chunks and clear buffer to guarantee repeated recordings do not reuse stale data
+        const finalChunks = [...sessionChunks];
+        sessionChunks.length = 0;
+        audioChunksRef.current = [];
+
+        const audioBlob = new Blob(finalChunks, {
           type: mimeType || "audio/webm",
         });
 
-        if (audioBlob.size === 0) {
+        // Ensure Blob has non-zero size and exceeds empty container header threshold (> 500 bytes)
+        // A WebM container header without audio frames is ~80-250 bytes
+        if (!audioBlob || audioBlob.size < 500) {
+          console.warn("Audio recording is empty or under 500 bytes (header only), skipping upload:", audioBlob?.size);
           setIsListening(false);
           setIsTranscribing(false);
           setInterimTranscript("");
           isTranscribingRef.current = false;
+          setError("No speech was detected. Please speak clearly.");
           return;
         }
 
-        // Send to FastAPI Cloud Whisper endpoint
+        // Send finalized, complete audio Blob to FastAPI Cloud STT endpoint
         isTranscribingRef.current = true;
         setIsTranscribing(true);
-        setInterimTranscript("Transcribing with Groq Whisper (cloud STT)...");
+        setInterimTranscript("Transcribing audio (cloud STT)...");
 
         try {
           const res = await api.transcribeAudio(audioBlob);
@@ -249,17 +276,28 @@ export function useVoiceRecognition() {
           setIsListening(false);
           setInterimTranscript("");
           isTranscribingRef.current = false;
-          setError(`Cloud Whisper transcription error: ${err.message}`);
+          setError(`Speech transcription error: ${err.message}`);
         }
       };
 
-      mediaRecorder.start(250); // Slice into 250ms chunks
+      mediaRecorder.start(500); // 500ms slice ensures data is periodically emitted
       setIsListening(true);
       setIsRecording(true);
 
-      // Start elapsed timer
+      // Start elapsed timer with safe max duration check
       timerRef.current = setInterval(() => {
-        setRecordingSeconds((prev) => prev + 1);
+        setRecordingSeconds((prev) => {
+          const next = prev + 1;
+          if (next >= MAX_RECORDING_SECONDS) {
+            // Reached safe ceiling before Sarvam's strict 30s limit; stop and finalize recording cleanly
+            setTimeout(() => {
+              if (stopListeningRef.current) {
+                stopListeningRef.current();
+              }
+            }, 0);
+          }
+          return next;
+        });
       }, 1000);
     } catch (err) {
       cleanupAudioNodes();
@@ -314,6 +352,10 @@ export function useVoiceRecognition() {
     setHasDetectedSpeech(false);
   }, []);
 
+  const remainingSeconds = Math.max(0, MAX_RECORDING_SECONDS - recordingSeconds);
+  const isApproachingLimit = isRecording && recordingSeconds >= WARNING_THRESHOLD_SECONDS;
+  const isLimitReached = isRecording && recordingSeconds >= MAX_RECORDING_SECONDS;
+
   return {
     isSupported,
     isListening,
@@ -321,6 +363,11 @@ export function useVoiceRecognition() {
     isTranscribing,
     recordingSeconds,
     recordingTimeFormatted: formatTime(recordingSeconds),
+    maxRecordingSeconds: MAX_RECORDING_SECONDS,
+    warningThresholdSeconds: WARNING_THRESHOLD_SECONDS,
+    remainingSeconds,
+    isApproachingLimit,
+    isLimitReached,
     transcript,
     setTranscript,
     interimTranscript,

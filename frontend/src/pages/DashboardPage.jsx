@@ -19,7 +19,7 @@ import { useToast } from "../context/ToastContext";
 import Modal from "../components/common/Modal";
 
 export default function DashboardPage({ setView, searchQuery = "", setSearchQuery }) {
-  const { user } = useAuth();
+  const { user, isAdmin, isSuperAdmin } = useAuth();
   const { toast } = useToast();
 
   const [forms, setForms] = useState([]);
@@ -121,15 +121,17 @@ export default function DashboardPage({ setView, searchQuery = "", setSearchQuer
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={() => setView({ name: "create" })}
-            className="inline-flex items-center space-x-2 px-4 py-2 bg-[#111111] hover:bg-neutral-800 text-white rounded-lg text-xs font-semibold transition-all shadow-xs cursor-pointer"
-          >
-            <PlusCircle className="w-4 h-4" />
-            <span>Create New Form</span>
-          </button>
-        </div>
+        {isAdmin && (
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => setView({ name: "create" })}
+              className="inline-flex items-center space-x-2 px-4 py-2 bg-[#111111] hover:bg-neutral-800 text-white rounded-lg text-xs font-semibold transition-all shadow-xs cursor-pointer"
+            >
+              <PlusCircle className="w-4 h-4" />
+              <span>Create New Form</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Statistics Cards */}
@@ -245,20 +247,28 @@ export default function DashboardPage({ setView, searchQuery = "", setSearchQuer
             <FolderOpen className="w-6 h-6 text-neutral-400" />
           </div>
           <h3 className="text-sm font-semibold text-neutral-900">
-            {searchQuery ? "No matching forms found" : "No forms created yet"}
+            {searchQuery
+              ? "No matching forms found"
+              : isAdmin
+              ? "No forms created yet"
+              : "No published forms available"}
           </h3>
           <p className="text-xs text-[#737373] max-w-sm mx-auto mt-1 mb-6 leading-relaxed">
             {searchQuery
-              ? `No forms match your search "${searchQuery}". Clear search or create a new form.`
-              : "Generate a custom form with AI natural language, upload a document, or choose from pre-built templates."}
+              ? `No forms match your search "${searchQuery}". Clear search ${isAdmin ? "or create a new form." : "to view all published forms."}`
+              : isAdmin
+              ? "Generate a custom form with AI natural language, upload a document, or choose from pre-built templates."
+              : "There are currently no published forms available to fill. Please check back once an administrator publishes a form."}
           </p>
-          <button
-            onClick={() => setView({ name: "create" })}
-            className="inline-flex items-center space-x-2 px-4 py-2 bg-[#111111] text-white text-xs font-semibold rounded-lg hover:bg-neutral-800 transition-colors shadow-xs cursor-pointer"
-          >
-            <PlusCircle className="w-4 h-4" />
-            <span>Create Your First Form</span>
-          </button>
+          {isAdmin && (
+            <button
+              onClick={() => setView({ name: "create" })}
+              className="inline-flex items-center space-x-2 px-4 py-2 bg-[#111111] text-white text-xs font-semibold rounded-lg hover:bg-neutral-800 transition-colors shadow-xs cursor-pointer"
+            >
+              <PlusCircle className="w-4 h-4" />
+              <span>Create Your First Form</span>
+            </button>
+          )}
         </div>
       )}
 
@@ -331,20 +341,22 @@ export default function DashboardPage({ setView, searchQuery = "", setSearchQuer
                       <span>Voice Fill</span>
                     </button>
 
-                    <button
-                      onClick={() =>
-                        setView({
-                          name: "editor",
-                          formId: form.id,
-                          formTitle: form.title,
-                        })
-                      }
-                      className="inline-flex items-center space-x-1 px-2.5 py-1.5 border border-[#E5E5E5] hover:border-black text-xs text-neutral-700 hover:text-black rounded-lg transition-colors cursor-pointer"
-                      title="Edit form structure"
-                    >
-                      <Edit3 className="w-3 h-3" />
-                      <span>Edit</span>
-                    </button>
+                    {isAdmin && (
+                      <button
+                        onClick={() =>
+                          setView({
+                            name: "editor",
+                            formId: form.id,
+                            formTitle: form.title,
+                          })
+                        }
+                        className="inline-flex items-center space-x-1 px-2.5 py-1.5 border border-[#E5E5E5] hover:border-black text-xs text-neutral-700 hover:text-black rounded-lg transition-colors cursor-pointer"
+                        title="Edit form structure"
+                      >
+                        <Edit3 className="w-3 h-3" />
+                        <span>Edit</span>
+                      </button>
+                    )}
 
                     <button
                       onClick={() =>
@@ -360,15 +372,15 @@ export default function DashboardPage({ setView, searchQuery = "", setSearchQuer
                     </button>
                   </div>
 
-                  {/* Delete button: Only SUPER_ADMIN can delete any form; regular users can only delete their own forms */}
-                  {(user?.role === "SUPER_ADMIN" || (form.user_id && form.user_id === Number(user?.id))) && (
+                  {/* Delete button: Only admins can delete forms */}
+                  {isAdmin && (isSuperAdmin || (form.user_id && form.user_id === Number(user?.id))) && (
                     <button
                       onClick={() => {
                         setDeleteModalForm(form);
                         setConfirmDeleteSubmissionsChecked(false);
                       }}
                       className="p-1.5 text-neutral-400 hover:text-red-600 rounded-md hover:bg-red-50 transition-colors cursor-pointer shrink-0"
-                      title={user?.role === "SUPER_ADMIN" ? "Delete Form (Super Admin)" : "Delete Form"}
+                      title={isSuperAdmin ? "Delete Form (Super Admin)" : "Delete Form"}
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>

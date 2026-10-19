@@ -71,7 +71,10 @@ class GroqSTTProvider(BaseSTTProvider):
             "temperature": temperature,
         }
         if effective_language:
-            kwargs["language"] = effective_language
+            # Whisper requires ISO 639-1 codes (e.g. 'en', 'ta', 'hi') instead of BCP-47 regional tags ('en-IN', 'ta-IN')
+            clean_lang = effective_language.split("-")[0].split("_")[0].lower().strip()
+            if clean_lang:
+                kwargs["language"] = clean_lang
         if effective_prompt:
             kwargs["prompt"] = effective_prompt
 

@@ -196,10 +196,10 @@ def test_7_suspended_user_cannot_access_protected_apis(client, db_session, rbac_
 
 
 def test_8_existing_public_form_workflows_continue(client, rbac_users):
-    """8. Existing public form workflows continue to work."""
-    token_user = rbac_users["token_user"]
+    """8. Existing public form workflows continue to work (admin publishes, guest fills)."""
+    token_admin = rbac_users["token_admin"]
 
-    # User creates a public form
+    # Admin creates and publishes a public form
     form_res = client.post(
         "/api/forms",
         json={
@@ -210,7 +210,7 @@ def test_8_existing_public_form_workflows_continue(client, rbac_users):
                 "fields": [{"name": "response", "label": "Response", "type": "text", "required": True}]
             }
         },
-        headers={"Authorization": f"Bearer {token_user}"}
+        headers={"Authorization": f"Bearer {token_admin}"}
     )
     assert form_res.status_code == 201
     form_id = form_res.json()["id"]
@@ -225,11 +225,26 @@ def test_8_existing_public_form_workflows_continue(client, rbac_users):
 
 
 def test_9_existing_ownership_and_cross_user_isolation_passes(client, rbac_users):
-    """9. Existing ownership and cross-user isolation protections still pass."""
+    """9. Ordinary USER cannot create forms; admin creates private form and non-owners cannot read it."""
     token_user = rbac_users["token_user"]
     token_admin = rbac_users["token_admin"]
 
-    # User creates private form
+    # 1. Ordinary user attempts to create a form -> 403 Forbidden
+    denied_res = client.post(
+        "/api/forms",
+        json={
+            "title": "Unauthorized User Form",
+            "is_public": False,
+            "schema_json": {
+                "title": "Unauthorized User Form",
+                "fields": [{"name": "entry", "label": "Entry", "type": "text"}]
+            }
+        },
+        headers={"Authorization": f"Bearer {token_user}"}
+    )
+    assert denied_res.status_code == 403
+
+    # 2. Admin creates private form
     form_res = client.post(
         "/api/forms",
         json={
@@ -240,12 +255,13 @@ def test_9_existing_ownership_and_cross_user_isolation_passes(client, rbac_users
                 "fields": [{"name": "entry", "label": "Entry", "type": "text"}]
             }
         },
-        headers={"Authorization": f"Bearer {token_user}"}
+        headers={"Authorization": f"Bearer {token_admin}"}
     )
+    assert form_res.status_code == 201
     form_id = form_res.json()["id"]
 
-    # Another user cannot read private form
-    other_res = client.get(f"/api/forms/{form_id}", headers={"Authorization": f"Bearer {token_admin}"})
+    # 3. Regular user cannot read private form -> 403 Forbidden
+    other_res = client.get(f"/api/forms/{form_id}", headers={"Authorization": f"Bearer {token_user}"})
     assert other_res.status_code == 403
 
 

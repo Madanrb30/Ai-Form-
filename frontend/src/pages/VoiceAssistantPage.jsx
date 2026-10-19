@@ -16,6 +16,9 @@ import {
   Play,
   RotateCcw,
   FastForward,
+  Upload,
+  Download,
+  FileText,
 } from "lucide-react";
 import { api } from "../services/api";
 import { storageService } from "../services/storageService";
@@ -27,6 +30,7 @@ import MicrophoneButton from "../components/voice/MicrophoneButton";
 import AudioWaveform from "../components/voice/AudioWaveform";
 import VoiceTranscriptPanel from "../components/voice/VoiceTranscriptPanel";
 import FormRenderer from "../components/forms/FormRenderer";
+import PdfUploadModal from "../components/forms/PdfUploadModal";
 
 export default function VoiceAssistantPage({ formId, setView }) {
   const { user } = useAuth();
@@ -41,9 +45,15 @@ export default function VoiceAssistantPage({ formId, setView }) {
   const [errors, setErrors] = useState({});
   const [highlightedFields, setHighlightedFields] = useState([]);
   const [aiFilledFields, setAiFilledFields] = useState([]);
+  const [pdfFilledFields, setPdfFilledFields] = useState([]);
+  const [manuallyEditedFields, setManuallyEditedFields] = useState([]);
   const [sessionId, setSessionId] = useState(null);
-  const [_missingFields, setMissingFields] = useState([]);
+  const [missingFields, setMissingFields] = useState([]);
   const [needsReviewFields, setNeedsReviewFields] = useState({});
+
+  // PDF Extraction & Export State
+  const [pdfUploadModalOpen, setPdfUploadModalOpen] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
 
   // Voice Interaction State (10 explicit states for ChatGPT Voice Mode):
   // 'idle' | 'initializing' | 'listening' | 'recording' | 'transcribing' | 'processing' | 'speaking' | 'confirmation' | 'error' | 'stopped'
@@ -76,14 +86,21 @@ export default function VoiceAssistantPage({ formId, setView }) {
   const isSubmittedRef = useRef(false);
   const isStoppedRef = useRef(false);
   const isProcessingTurnRef = useRef(false);
+  const draftSaveTimeoutRef = useRef(null);
 
-  // Cloud Audio Recording & Speech Recognition Hook (Groq Whisper-large-v3-turbo)
+  // Cloud Audio Recording & Speech Recognition Hook (Sarvam AI primary, Groq Whisper fallback)
   const {
     isSupported,
     isListening,
     isRecording,
     isTranscribing,
+    recordingSeconds,
     recordingTimeFormatted,
+    maxRecordingSeconds,
+    warningThresholdSeconds,
+    remainingSeconds,
+    isApproachingLimit,
+    isLimitReached,
     transcript,
     interimTranscript,
     error: speechError,
@@ -94,6 +111,23 @@ export default function VoiceAssistantPage({ formId, setView }) {
     resetTranscript,
   } = useVoiceRecognition();
 
+  // Debounced server-side draft saver with instant local storage persistence
+  const scheduleDraftSave = useCallback(
+    (updatedValues, activeSessionId) => {
+      // 1. Immediately persist to client local storage (0ms latency, refresh resilient)
+      storageService.saveDraft(formId, updatedValues, form?.title || "Form Draft", user?.id);
+
+      // 2. Debounce backend network save to coalesce rapid conversational turns
+      if (draftSaveTimeoutRef.current) {
+        clearTimeout(draftSaveTimeoutRef.current);
+      }
+      draftSaveTimeoutRef.current = setTimeout(() => {
+        api.saveDraft(formId, updatedValues, activeSessionId).catch(() => {});
+      }, 1200);
+    },
+    [formId, form?.title, user?.id]
+  );
+
   // Lifecycle teardown on unmount
   useEffect(() => {
     isMountedRef.current = true;
@@ -101,6 +135,9 @@ export default function VoiceAssistantPage({ formId, setView }) {
       isMountedRef.current = false;
       ttsService.stop();
       cancelListening();
+      if (draftSaveTimeoutRef.current) {
+        clearTimeout(draftSaveTimeoutRef.current);
+      }
     };
   }, [cancelListening]);
 
@@ -181,13 +218,29 @@ export default function VoiceAssistantPage({ formId, setView }) {
       setStatusMessage("Transcribing audio via STT provider...");
     } else if (isRecording) {
       setVoiceState("recording");
-      setStatusMessage(
-        continuousMode
-          ? `Listening & recording... (${recordingTimeFormatted}). Speak your response.`
-          : `Recording audio... (${recordingTimeFormatted}). Speak clearly, then click Stop.`
-      );
+      if (isApproachingLimit) {
+        setStatusMessage(
+          `Approaching limit (${remainingSeconds}s remaining). Finalizing turn before ${maxRecordingSeconds}s ceiling...`
+        );
+      } else {
+        setStatusMessage(
+          continuousMode
+            ? `Listening & recording... (${recordingTimeFormatted} / 0:${maxRecordingSeconds}). Speak your response.`
+            : `Recording audio... (${recordingTimeFormatted} / 0:${maxRecordingSeconds}). Speak clearly, then click Stop.`
+        );
+      }
     }
-  }, [isRecording, isTranscribing, recordingTimeFormatted, speechError, continuousMode, startListening]);
+  }, [
+    isRecording,
+    isTranscribing,
+    recordingTimeFormatted,
+    speechError,
+    continuousMode,
+    startListening,
+    isApproachingLimit,
+    remainingSeconds,
+    maxRecordingSeconds,
+  ]);
 
   // Resume listening in Continuous Conversation mode
   const resumeContinuousListening = useCallback(() => {
@@ -254,13 +307,26 @@ export default function VoiceAssistantPage({ formId, setView }) {
         setMissingFields(turnRes.missing_fields || []);
 
         const matchedKeys = turnRes.newly_filled || [];
+        const clearedKeys = turnRes.cleared_fields || [];
         const reviews = turnRes.needs_review || {};
         setNeedsReviewFields(reviews);
 
-        if (matchedKeys.length > 0) {
-          setHighlightedFields(matchedKeys);
-          setAiFilledFields((prev) => Array.from(new Set([...prev, ...matchedKeys])));
+        // Update aiFilledFields: add newly filled, remove cleared or empty
+        setAiFilledFields((prev) => {
+          const nextSet = new Set(prev);
+          matchedKeys.forEach((k) => nextSet.add(k));
+          clearedKeys.forEach((k) => nextSet.delete(k));
+          (turnRes.missing_fields || []).forEach((k) => nextSet.delete(k));
+          return Array.from(nextSet);
+        });
 
+        if (clearedKeys.length > 0) {
+          setHighlightedFields(clearedKeys);
+          setTimeout(() => {
+            if (isMountedRef.current) setHighlightedFields([]);
+          }, 2500);
+        } else if (matchedKeys.length > 0) {
+          setHighlightedFields(matchedKeys);
           setTimeout(() => {
             if (isMountedRef.current) setHighlightedFields([]);
           }, 3000);
@@ -269,17 +335,20 @@ export default function VoiceAssistantPage({ formId, setView }) {
         setErrors((prev) => {
           const next = { ...prev };
           matchedKeys.forEach((k) => delete next[k]);
+          clearedKeys.forEach((k) => delete next[k]);
           Object.assign(next, reviews);
           return next;
         });
 
-        // Autosave draft server-side and locally
+        // Autosave draft server-side (debounced) and locally (instant)
         const activeSessionId = turnRes.session_id || sessionId;
-        api.saveDraft(formId, updated, activeSessionId).catch(() => {});
-        storageService.saveDraft(formId, updated, form?.title || "Form Draft", user?.id);
+        scheduleDraftSave(updated, activeSessionId);
 
         if (turnRes.is_submitted || turnRes.submission_id) {
           // Form successfully submitted by the conversational agent!
+          if (draftSaveTimeoutRef.current) {
+            clearTimeout(draftSaveTimeoutRef.current);
+          }
           isSubmittedRef.current = true;
           isStoppedRef.current = true;
           ttsService.stop();
@@ -323,19 +392,30 @@ export default function VoiceAssistantPage({ formId, setView }) {
         }
 
         const assistantReply = turnRes.assistant_response || "Information updated.";
+        const clearedCount = clearedKeys.length;
+        const metaText = clearedCount > 0
+          ? `Cleared ${clearedCount} field(s)`
+          : matchedKeys.length > 0
+          ? `Updated ${matchedKeys.length} field(s)`
+          : "Guidance";
 
         setConversation((prev) => [
           ...prev,
           {
             role: "assistant",
             text: assistantReply,
-            meta: matchedKeys.length > 0 ? `Updated ${matchedKeys.length} field(s)` : "Guidance",
+            meta: metaText,
           },
         ]);
 
         if (turnRes.is_completed) {
           setVoiceState("confirmation");
           toast("All required fields are completed! Speak 'confirm' or click to submit.", "success");
+        } else {
+          // If form is not complete, ensure voice state does not stay stuck in confirmation
+          if (voiceStateRef.current === "confirmation") {
+            setVoiceState("idle");
+          }
         }
 
         // Assistant Speaking & Continuous Audio Resumption
@@ -503,8 +583,96 @@ export default function VoiceAssistantPage({ formId, setView }) {
     );
   };
 
+  // Independent PDF Export Handler (Requirement 8)
+  const handleExportPdf = async () => {
+    setExportingPdf(true);
+    try {
+      toast("Generating completed form PDF document...", "info");
+      await api.exportFormPdf(formId, values, `${form?.title || "Form"}_completed.pdf`);
+      toast("PDF document exported successfully.", "success");
+    } catch (err) {
+      toast(`PDF export failed: ${err.message}`, "error");
+    } finally {
+      setExportingPdf(false);
+    }
+  };
+
+  // PDF Extraction & Auto-Fill Handler
+  const handlePdfExtractionSuccess = useCallback(
+    (result) => {
+      const extracted = result.extracted_fields || {};
+      const nextValues = { ...values };
+
+      // Requirement 6: Do not overwrite manually corrected values when extraction is repeated
+      const newlyPopulatedKeys = [];
+      Object.entries(extracted).forEach(([k, v]) => {
+        if (!manuallyEditedFields.includes(k)) {
+          nextValues[k] = v;
+          newlyPopulatedKeys.push(k);
+        }
+      });
+
+      setValues(nextValues);
+      setPdfFilledFields((prev) => Array.from(new Set([...prev, ...newlyPopulatedKeys])));
+      setHighlightedFields(newlyPopulatedKeys);
+      setTimeout(() => {
+        if (isMountedRef.current) setHighlightedFields([]);
+      }, 3500);
+
+      const reviews = result.needs_review || {};
+      setNeedsReviewFields(reviews);
+      const missing = result.missing_required_fields || [];
+      setMissingFields(missing);
+
+      setErrors((prev) => {
+        const next = { ...prev };
+        newlyPopulatedKeys.forEach((k) => delete next[k]);
+        Object.assign(next, reviews);
+        return next;
+      });
+
+      // Schedule draft save
+      scheduleDraftSave(nextValues, sessionId);
+
+      // Conversational Follow-Up Integration (Requirement 5)
+      const matchedCount = newlyPopulatedKeys.length;
+      const missingCount = missing.length;
+      let assistantMsg = "";
+      if (missingCount > 0) {
+        const missingLabels = missing
+          .map((name) => form?.schema_json?.fields?.find((f) => f.name === name)?.label || name)
+          .join(", ");
+        assistantMsg = `I have extracted your personal details from the PDF. ${matchedCount} field${matchedCount === 1 ? '' : 's'} were populated. ${missingCount} required field${missingCount === 1 ? '' : 's'} still need information: ${missingLabels}. Would you like to speak or enter them now?`;
+      } else {
+        assistantMsg = `I have extracted your personal details from the PDF and all required fields are complete! Please review the populated values and submit when ready.`;
+      }
+
+      setConversation((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          text: assistantMsg,
+          meta: "PDF Auto-Fill",
+        },
+      ]);
+
+      if (ttsEnabled) {
+        ttsService.speak(assistantMsg);
+      }
+
+      toast(
+        `PDF extraction complete: ${matchedCount} field(s) populated.`,
+        "success"
+      );
+    },
+    [values, manuallyEditedFields, scheduleDraftSave, sessionId, form, ttsEnabled, toast]
+  );
+
   // Draft Save Handler
   const handleSaveDraft = async () => {
+    if (draftSaveTimeoutRef.current) {
+      clearTimeout(draftSaveTimeoutRef.current);
+    }
     storageService.saveDraft(formId, values, form?.title || "Form Draft", user?.id);
     try {
       await api.saveDraft(formId, values, sessionId);
@@ -517,6 +685,9 @@ export default function VoiceAssistantPage({ formId, setView }) {
   // Direct Submission Handler
   const [submitting, setSubmitting] = useState(false);
   const handleDirectSubmit = async () => {
+    if (draftSaveTimeoutRef.current) {
+      clearTimeout(draftSaveTimeoutRef.current);
+    }
     setSubmitting(true);
     try {
       const response = await api.createSubmission(formId, values);
@@ -654,6 +825,33 @@ export default function VoiceAssistantPage({ formId, setView }) {
             <span>{ttsEnabled ? "Audio On" : "Muted"}</span>
           </button>
 
+          {/* PDF Auto-Fill Button */}
+          <button
+            type="button"
+            onClick={() => setPdfUploadModalOpen(true)}
+            className="px-3 py-1.5 border border-neutral-900 bg-neutral-900 hover:bg-black text-white rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition-colors cursor-pointer shadow-xs"
+            title="Upload personal information PDF (resume, ID, application) to auto-fill form"
+          >
+            <Upload className="w-3.5 h-3.5 text-neutral-200" />
+            <span>Auto-Fill from PDF</span>
+          </button>
+
+          {/* Export PDF Button (Independent of Submission) */}
+          <button
+            type="button"
+            onClick={handleExportPdf}
+            disabled={exportingPdf}
+            className="px-3 py-1.5 border border-[#E5E5E5] hover:border-black rounded-lg text-xs font-medium text-neutral-700 hover:text-black transition-colors flex items-center space-x-1.5 cursor-pointer disabled:opacity-50"
+            title="Export completed PDF independently of submission"
+          >
+            {exportingPdf ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-neutral-700" />
+            ) : (
+              <Download className="w-3.5 h-3.5" />
+            )}
+            <span>Export PDF</span>
+          </button>
+
           <button
             type="button"
             onClick={handleSaveDraft}
@@ -736,9 +934,21 @@ export default function VoiceAssistantPage({ formId, setView }) {
               </span>
               <div className="flex items-center space-x-2">
                 {isRecording && (
-                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 animate-pulse font-semibold flex items-center space-x-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-red-600 animate-ping mr-1" />
-                    REC {recordingTimeFormatted}
+                  <span
+                    className={`text-[10px] font-mono px-2 py-0.5 rounded-full border font-semibold flex items-center space-x-1 ${
+                      isApproachingLimit
+                        ? "bg-amber-100 text-amber-900 border-amber-300 animate-pulse"
+                        : "bg-red-100 text-red-700 border-red-200 animate-pulse"
+                    }`}
+                  >
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full animate-ping mr-1 ${
+                        isApproachingLimit ? "bg-amber-600" : "bg-red-600"
+                      }`}
+                    />
+                    {isApproachingLimit
+                      ? `REC ${recordingTimeFormatted} / 0:${maxRecordingSeconds} (${remainingSeconds}s left)`
+                      : `REC ${recordingTimeFormatted} / 0:${maxRecordingSeconds}`}
                   </span>
                 )}
                 <span
@@ -791,14 +1001,54 @@ export default function VoiceAssistantPage({ formId, setView }) {
               <AudioWaveform isListening={isListening || isRecording} count={24} height="h-8" />
             </div>
 
+            {/* Turn Duration & Countdown Indicator */}
+            {isRecording && (
+              <div className="space-y-1.5 px-2 text-left bg-neutral-50 border border-neutral-200 rounded-xl p-2.5">
+                <div className="flex items-center justify-between text-[11px] font-mono">
+                  <span
+                    className={
+                      isApproachingLimit
+                        ? "text-amber-800 font-semibold flex items-center gap-1.5"
+                        : "text-neutral-600"
+                    }
+                  >
+                    {isApproachingLimit && (
+                      <span className="inline-block w-2 h-2 rounded-full bg-amber-500 animate-ping" />
+                    )}
+                    {isApproachingLimit
+                      ? `Approaching limit: ${remainingSeconds}s left (wrapping up turn)`
+                      : `Turn Duration: ${recordingTimeFormatted} / 0:${maxRecordingSeconds}`}
+                  </span>
+                  <span className="text-[10px] text-neutral-400 font-mono">
+                    Limit: {maxRecordingSeconds}s
+                  </span>
+                </div>
+                <div className="w-full bg-neutral-200 h-1.5 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full transition-all duration-300 ${
+                      isApproachingLimit ? "bg-amber-500" : "bg-neutral-900"
+                    }`}
+                    style={{
+                      width: `${Math.min(100, (recordingSeconds / maxRecordingSeconds) * 100)}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
             {/* Status Message */}
             <div className="bg-[#F7F7F7] border border-[#E5E5E5] rounded-xl p-3 text-xs text-neutral-700 space-y-1">
               <p className="font-medium">{statusMessage}</p>
               {transcriptionMeta?.model && (
                 <p className="text-[10px] text-neutral-400 font-mono">
-                  Cloud Whisper STT: {transcriptionMeta.model}
+                  {(transcriptionMeta.provider ? transcriptionMeta.provider.toUpperCase() : "STT")}: {transcriptionMeta.model}
                   {transcriptionMeta.duration ? ` • ${transcriptionMeta.duration.toFixed(1)}s audio` : ""}
                 </p>
+              )}
+              {transcriptionMeta?.fallback_used && (
+                <div className="text-[10px] text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-2 py-1 mt-1 font-mono text-left">
+                  <span className="font-semibold">Notice:</span> {transcriptionMeta.fallback_reason || "Transcribed via fallback STT provider."}
+                </div>
               )}
             </div>
 
@@ -974,6 +1224,16 @@ export default function VoiceAssistantPage({ formId, setView }) {
 
               <div className="flex items-center space-x-2">
                 <button
+                  type="button"
+                  onClick={() => setPdfUploadModalOpen(true)}
+                  className="inline-flex items-center space-x-1.5 px-2.5 py-1 text-xs border border-neutral-900 bg-neutral-900 text-white hover:bg-black rounded-lg transition-colors cursor-pointer shadow-2xs"
+                  title="Upload personal information PDF to auto-fill form"
+                >
+                  <Upload className="w-3 h-3 text-neutral-200" />
+                  <span>Auto-Fill from PDF</span>
+                </button>
+
+                <button
                   onClick={() =>
                     setView({
                       name: "editor",
@@ -1026,6 +1286,13 @@ export default function VoiceAssistantPage({ formId, setView }) {
               errors={errors}
               highlightedFields={highlightedFields}
               aiFilledFields={aiFilledFields}
+              pdfFilledFields={pdfFilledFields}
+              needsReviewFields={needsReviewFields}
+              manuallyEditedFields={manuallyEditedFields}
+              missingFields={missingFields}
+              onFieldManualEdit={(fieldName) => {
+                setManuallyEditedFields((prev) => Array.from(new Set([...prev, fieldName])));
+              }}
             />
 
             {/* Bottom Actions */}
@@ -1039,6 +1306,9 @@ export default function VoiceAssistantPage({ formId, setView }) {
                   });
                   setValues(initial);
                   setAiFilledFields([]);
+                  setPdfFilledFields([]);
+                  setNeedsReviewFields({});
+                  setManuallyEditedFields([]);
                   setErrors({});
                   toast("Form fields cleared.", "info");
                 }}
@@ -1055,6 +1325,9 @@ export default function VoiceAssistantPage({ formId, setView }) {
                     formId,
                     formTitle: form?.title,
                     values,
+                    pdfFilledFields,
+                    needsReviewFields,
+                    manuallyEditedFields,
                   })
                 }
                 className="inline-flex items-center space-x-2 px-5 py-2 bg-[#111111] hover:bg-neutral-800 text-white rounded-lg text-xs font-semibold transition-all shadow-xs cursor-pointer"
@@ -1066,6 +1339,15 @@ export default function VoiceAssistantPage({ formId, setView }) {
           </div>
         </div>
       </div>
+
+      {/* PDF Upload & Extraction Modal */}
+      <PdfUploadModal
+        isOpen={pdfUploadModalOpen}
+        onClose={() => setPdfUploadModalOpen(false)}
+        formId={formId}
+        formTitle={form?.title}
+        onExtractionSuccess={handlePdfExtractionSuccess}
+      />
     </div>
   );
 }

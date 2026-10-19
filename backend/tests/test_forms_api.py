@@ -38,8 +38,8 @@ def test_anonymous_form_creation_rejected(client):
     assert res.status_code == 401
 
 
-def test_form_crud_lifecycle(client, auth_headers):
-    # 1. Create Form (Authenticated)
+def test_form_crud_lifecycle(client, admin_headers):
+    # 1. Create Form (Authenticated Admin)
     payload = {
         "title": "Job Application Form",
         "description": "Candidate application details",
@@ -71,7 +71,7 @@ def test_form_crud_lifecycle(client, auth_headers):
             ]
         }
     }
-    create_res = client.post("/api/forms", json=payload, headers=auth_headers)
+    create_res = client.post("/api/forms", json=payload, headers=admin_headers)
     assert create_res.status_code == 201
     form_data = create_res.json()
     form_id = form_data["id"]
@@ -79,13 +79,13 @@ def test_form_crud_lifecycle(client, auth_headers):
     assert len(form_data["schema_json"]["fields"]) == 3
 
     # 2. List Forms (Authenticated sees own created form)
-    list_res = client.get("/api/forms", headers=auth_headers)
+    list_res = client.get("/api/forms", headers=admin_headers)
     assert list_res.status_code == 200
     forms = list_res.json()
     assert any(f["id"] == form_id for f in forms)
 
     # 3. Get Form by ID
-    get_res = client.get(f"/api/forms/{form_id}", headers=auth_headers)
+    get_res = client.get(f"/api/forms/{form_id}", headers=admin_headers)
     assert get_res.status_code == 200
     assert get_res.json()["id"] == form_id
 
@@ -93,24 +93,24 @@ def test_form_crud_lifecycle(client, auth_headers):
     update_res = client.put(
         f"/api/forms/{form_id}",
         json={"title": "Updated Job Application Form"},
-        headers=auth_headers
+        headers=admin_headers
     )
     assert update_res.status_code == 200
     assert update_res.json()["title"] == "Updated Job Application Form"
 
     # 5. Non-existent form
-    missing_res = client.get("/api/forms/99999", headers=auth_headers)
+    missing_res = client.get("/api/forms/99999", headers=admin_headers)
     assert missing_res.status_code == 404
 
     # 6. Delete Form (Owner)
-    del_res = client.delete(f"/api/forms/{form_id}", headers=auth_headers)
+    del_res = client.delete(f"/api/forms/{form_id}", headers=admin_headers)
     assert del_res.status_code == 204
 
     # Confirm deleted
     assert client.get(f"/api/forms/{form_id}").status_code == 404
 
 
-def test_form_submissions_and_validation(client, auth_headers):
+def test_form_submissions_and_validation(client, admin_headers):
     # Setup form (Authenticated creator)
     form_payload = {
         "title": "Contact Us",
@@ -124,7 +124,7 @@ def test_form_submissions_and_validation(client, auth_headers):
             ]
         }
     }
-    create_form_res = client.post("/api/forms", json=form_payload, headers=auth_headers)
+    create_form_res = client.post("/api/forms", json=form_payload, headers=admin_headers)
     assert create_form_res.status_code == 201
     form_id = create_form_res.json()["id"]
 
@@ -166,8 +166,35 @@ def test_form_submissions_and_validation(client, auth_headers):
     assert anon_subs_res.status_code == 401
 
     # 6. Retrieve Submissions (Authenticated form owner)
-    get_subs_res = client.get(f"/api/forms/{form_id}/submissions", headers=auth_headers)
+    get_subs_res = client.get(f"/api/forms/{form_id}/submissions", headers=admin_headers)
     assert get_subs_res.status_code == 200
     subs = get_subs_res.json()
     assert len(subs) == 1
     assert subs[0]["response_json"]["email"] == "john@example.com"
+
+
+def test_regular_user_cannot_create_or_modify_forms(client, user_headers, admin_headers):
+    # Form creation attempt by regular USER -> 403 Forbidden
+    payload = {
+        "title": "User Form Attempt",
+        "schema_json": {
+            "title": "User Form",
+            "fields": [{"name": "name", "label": "Name", "type": "text"}]
+        }
+    }
+    create_res = client.post("/api/forms", json=payload, headers=user_headers)
+    assert create_res.status_code == 403
+    assert "permission" in create_res.json()["detail"].lower()
+
+    # Admin creates valid form
+    admin_form_res = client.post("/api/forms", json=payload, headers=admin_headers)
+    assert admin_form_res.status_code == 201
+    form_id = admin_form_res.json()["id"]
+
+    # Regular USER attempts to modify admin form -> 403 Forbidden
+    update_res = client.put(f"/api/forms/{form_id}", json={"title": "Hacked Title"}, headers=user_headers)
+    assert update_res.status_code == 403
+
+    # Regular USER attempts to delete admin form -> 403 Forbidden
+    del_res = client.delete(f"/api/forms/{form_id}", headers=user_headers)
+    assert del_res.status_code == 403

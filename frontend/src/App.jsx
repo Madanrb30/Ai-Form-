@@ -63,6 +63,23 @@ function MainApp() {
     );
   }
 
+  // Non-admins cannot access form creation, document generation, or editor pages
+  if (
+    (currentView.name === "create" || currentView.name === "generate" || currentView.name === "editor") &&
+    !isAdmin
+  ) {
+    return (
+      <AppLayout
+        currentView={{ name: "dashboard" }}
+        setView={setView}
+        searchQuery={searchQuery}
+        setSearchQuery={setSearchQuery}
+      >
+        <DashboardPage setView={setView} searchQuery={searchQuery} setSearchQuery={setSearchQuery} />
+      </AppLayout>
+    );
+  }
+
   return (
     <AppLayout
       currentView={currentView}
@@ -103,6 +120,9 @@ function MainApp() {
           formId={currentView.formId}
           formTitle={currentView.formTitle}
           values={currentView.values}
+          pdfFilledFields={currentView.pdfFilledFields}
+          needsReviewFields={currentView.needsReviewFields}
+          manuallyEditedFields={currentView.manuallyEditedFields}
           initialSubmissionSuccess={currentView.initialSubmissionSuccess}
           setView={setView}
         />

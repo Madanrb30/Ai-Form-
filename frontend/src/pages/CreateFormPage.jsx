@@ -15,9 +15,14 @@ import {
   Edit3,
   AlertTriangle,
   RotateCcw,
+  ChevronUp,
+  ChevronDown,
+  Globe,
+  Save,
 } from "lucide-react";
 import { api } from "../services/api";
 import { useToast } from "../context/ToastContext";
+import { useAuth } from "../context/AuthContext";
 import FormRenderer from "../components/forms/FormRenderer";
 
 const TEMPLATES = [
@@ -66,6 +71,8 @@ const TEMPLATES = [
 ];
 
 export default function CreateFormPage({ setView }) {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "ADMIN" || user?.role === "SUPER_ADMIN";
   const { toast } = useToast();
   const [activeTab, setActiveTab] = useState("upload"); // 'upload' | 'template' | 'blank'
 
@@ -191,16 +198,24 @@ export default function CreateFormPage({ setView }) {
   };
 
   // --- Save Generated Form to Backend ---
-  const handleSaveToDatabase = async () => {
-    if (!generatedSchema) return;
+  const handleSaveToDatabase = async (isPublicTarget = false) => {
+    if (!generatedSchema || savingSchema) return;
     setSavingSchema(true);
     try {
+      const finalIsPublic = Boolean(isPublicTarget && isAdmin);
       const created = await api.createForm({
         title: generatedSchema.title,
         description: generatedSchema.description,
         schema_json: generatedSchema,
+        is_public: finalIsPublic,
+        original_document_path: extractionMeta?.file_path || undefined,
       });
-      toast("Form saved successfully to SQLite database!", "success");
+      toast(
+        finalIsPublic
+          ? "Form published successfully! It is now visible to all users."
+          : "Form draft saved successfully.",
+        "success"
+      );
       // Direct user to Voice Assistant page for this new form!
       setView({
         name: "fill",
@@ -238,34 +253,83 @@ export default function CreateFormPage({ setView }) {
     setBlankFields(blankFields.filter((_, i) => i !== index));
   };
 
+  const moveBlankFieldUp = (index) => {
+    if (index === 0) return;
+    const reordered = [...blankFields];
+    const temp = reordered[index - 1];
+    reordered[index - 1] = reordered[index];
+    reordered[index] = temp;
+    setBlankFields(reordered);
+  };
+
+  const moveBlankFieldDown = (index) => {
+    if (index === blankFields.length - 1) return;
+    const reordered = [...blankFields];
+    const temp = reordered[index + 1];
+    reordered[index + 1] = reordered[index];
+    reordered[index] = temp;
+    setBlankFields(reordered);
+  };
+
+  const addBlankFieldOption = (fieldIndex) => {
+    const updated = [...blankFields];
+    const opts = [...(updated[fieldIndex].options || [])];
+    opts.push(`Option ${opts.length + 1}`);
+    updated[fieldIndex].options = opts;
+    setBlankFields(updated);
+  };
+
+  const updateBlankFieldOption = (fieldIndex, optIndex, val) => {
+    const updated = [...blankFields];
+    const opts = [...(updated[fieldIndex].options || [])];
+    opts[optIndex] = val;
+    updated[fieldIndex].options = opts;
+    setBlankFields(updated);
+  };
+
+  const removeBlankFieldOption = (fieldIndex, optIndex) => {
+    const updated = [...blankFields];
+    const opts = [...(updated[fieldIndex].options || [])];
+    if (opts.length <= 1) {
+      toast("Dropdown/radio fields must have at least one option.", "info");
+      return;
+    }
+    opts.splice(optIndex, 1);
+    updated[fieldIndex].options = opts;
+    setBlankFields(updated);
+  };
+
   const updateBlankField = (index, key, val) => {
     const updated = [...blankFields];
     updated[index][key] = val;
     if (key === "label" && (!updated[index].name || updated[index].name.startsWith("custom_field_"))) {
       updated[index].name = val.toLowerCase().replace(/[^a-z0-9]/g, "_").slice(0, 32);
     }
+    if (key === "type" && ["select", "radio"].includes(val) && (!updated[index].options || updated[index].options.length === 0)) {
+      updated[index].options = ["Option 1", "Option 2"];
+    }
     setBlankFields(updated);
   };
 
-  const handleSaveBlankForm = async (e) => {
-    e.preventDefault();
+  const handleSaveBlankForm = async (isPublicTarget = false) => {
     if (!blankTitle.trim()) {
       toast("Please provide a title for your form.", "error");
       return;
     }
     setSavingBlank(true);
     try {
+      const finalIsPublic = Boolean(isPublicTarget && isAdmin);
       const schemaJson = {
         title: blankTitle.trim(),
         description: blankDesc.trim() || undefined,
-        fields: blankFields.map((f) => ({
-          name: f.name.trim().toLowerCase().replace(/[^a-z0-9_]/g, "_") || "field",
-          label: f.label.trim() || "Field",
+        fields: blankFields.map((f, i) => ({
+          name: f.name.trim().toLowerCase().replace(/[^a-z0-9_]/g, "_") || `field_${i + 1}`,
+          label: f.label.trim() || `Field ${i + 1}`,
           type: f.type,
           required: Boolean(f.required),
           placeholder: f.placeholder || undefined,
           options: ["select", "radio"].includes(f.type)
-            ? f.options.length > 0
+            ? f.options && f.options.length > 0
               ? f.options
               : ["Option 1", "Option 2"]
             : undefined,
@@ -276,9 +340,15 @@ export default function CreateFormPage({ setView }) {
         title: blankTitle.trim(),
         description: blankDesc.trim() || undefined,
         schema_json: schemaJson,
+        is_public: finalIsPublic,
       });
 
-      toast("Blank form created successfully!", "success");
+      toast(
+        finalIsPublic
+          ? "Blank form published successfully! It is now visible to all users."
+          : "Blank form draft saved successfully!",
+        "success"
+      );
       setView({
         name: "fill",
         formId: created.id,
@@ -289,6 +359,56 @@ export default function CreateFormPage({ setView }) {
     } finally {
       setSavingBlank(false);
     }
+  };
+
+  // Reordering & Options for Generated Schema Fields
+  const moveGeneratedFieldUp = (index) => {
+    if (index === 0 || !generatedSchema?.fields) return;
+    const updated = [...generatedSchema.fields];
+    const temp = updated[index - 1];
+    updated[index - 1] = updated[index];
+    updated[index] = temp;
+    setGeneratedSchema({ ...generatedSchema, fields: updated });
+  };
+
+  const moveGeneratedFieldDown = (index) => {
+    if (!generatedSchema?.fields || index === generatedSchema.fields.length - 1) return;
+    const updated = [...generatedSchema.fields];
+    const temp = updated[index + 1];
+    updated[index + 1] = updated[index];
+    updated[index] = temp;
+    setGeneratedSchema({ ...generatedSchema, fields: updated });
+  };
+
+  const addGeneratedOption = (fieldIndex) => {
+    if (!generatedSchema?.fields) return;
+    const updated = [...generatedSchema.fields];
+    const opts = [...(updated[fieldIndex].options || [])];
+    opts.push(`Option ${opts.length + 1}`);
+    updated[fieldIndex] = { ...updated[fieldIndex], options: opts };
+    setGeneratedSchema({ ...generatedSchema, fields: updated });
+  };
+
+  const updateGeneratedOption = (fieldIndex, optIndex, val) => {
+    if (!generatedSchema?.fields) return;
+    const updated = [...generatedSchema.fields];
+    const opts = [...(updated[fieldIndex].options || [])];
+    opts[optIndex] = val;
+    updated[fieldIndex] = { ...updated[fieldIndex], options: opts };
+    setGeneratedSchema({ ...generatedSchema, fields: updated });
+  };
+
+  const removeGeneratedOption = (fieldIndex, optIndex) => {
+    if (!generatedSchema?.fields) return;
+    const updated = [...generatedSchema.fields];
+    const opts = [...(updated[fieldIndex].options || [])];
+    if (opts.length <= 1) {
+      toast("Dropdown/radio fields must have at least one option.", "info");
+      return;
+    }
+    opts.splice(optIndex, 1);
+    updated[fieldIndex] = { ...updated[fieldIndex], options: opts };
+    setGeneratedSchema({ ...generatedSchema, fields: updated });
   };
 
   return (
@@ -581,17 +701,42 @@ export default function CreateFormPage({ setView }) {
                 className="p-4 border border-[#E5E5E5] rounded-xl bg-white space-y-3"
               >
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-mono text-neutral-500">
-                    Field #{idx + 1}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => removeBlankField(idx)}
-                    className="text-neutral-400 hover:text-red-600 transition-colors cursor-pointer"
-                    title="Remove field"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  <div className="flex items-center space-x-2">
+                    <span className="text-xs font-mono font-bold text-neutral-800">
+                      #{idx + 1}
+                    </span>
+                    <span className="text-xs font-medium text-neutral-900">
+                      {field.label || "Untitled Field"}
+                    </span>
+                  </div>
+                  <div className="flex items-center space-x-1">
+                    <button
+                      type="button"
+                      disabled={idx === 0}
+                      onClick={() => moveBlankFieldUp(idx)}
+                      className="p-1 rounded text-neutral-500 hover:text-black hover:bg-neutral-100 transition-colors disabled:opacity-30 cursor-pointer"
+                      title="Move Up"
+                    >
+                      <ChevronUp className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={idx === blankFields.length - 1}
+                      onClick={() => moveBlankFieldDown(idx)}
+                      className="p-1 rounded text-neutral-500 hover:text-black hover:bg-neutral-100 transition-colors disabled:opacity-30 cursor-pointer"
+                      title="Move Down"
+                    >
+                      <ChevronDown className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => removeBlankField(idx)}
+                      className="p-1 rounded text-neutral-400 hover:text-red-600 hover:bg-red-50 transition-colors cursor-pointer ml-1"
+                      title="Remove field"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -643,6 +788,46 @@ export default function CreateFormPage({ setView }) {
                   </div>
                 </div>
 
+                {["select", "radio"].includes(field.type) && (
+                  <div className="p-3 bg-[#F7F7F7] border border-[#E5E5E5] rounded-lg space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-semibold text-neutral-700">
+                        Options for {field.type === "select" ? "Dropdown" : "Radio"}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => addBlankFieldOption(idx)}
+                        className="text-[11px] text-neutral-900 hover:underline flex items-center space-x-1 cursor-pointer font-medium"
+                      >
+                        <Plus className="w-3 h-3" />
+                        <span>Add Option</span>
+                      </button>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      {(field.options || []).map((opt, optIdx) => (
+                        <div key={optIdx} className="flex items-center space-x-2">
+                          <input
+                            type="text"
+                            value={opt}
+                            onChange={(e) => updateBlankFieldOption(idx, optIdx, e.target.value)}
+                            placeholder={`Option ${optIdx + 1}`}
+                            className="w-full px-2 py-1 text-xs border border-[#E5E5E5] rounded bg-white focus:outline-none focus:border-neutral-900"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => removeBlankFieldOption(idx, optIdx)}
+                            className="text-neutral-400 hover:text-red-600 p-1 cursor-pointer"
+                            title="Remove option"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <div className="pt-2 flex items-center justify-between border-t border-neutral-100 text-xs">
                   <label className="flex items-center space-x-2 cursor-pointer">
                     <input
@@ -661,14 +846,27 @@ export default function CreateFormPage({ setView }) {
             ))}
           </div>
 
-          <div className="pt-4 flex justify-end">
+          <div className="pt-4 flex items-center justify-end space-x-2">
             <button
-              type="submit"
+              type="button"
               disabled={savingBlank}
-              className="px-5 py-2.5 bg-[#111111] hover:bg-neutral-800 text-white rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer shadow-xs"
+              onClick={() => handleSaveBlankForm(false)}
+              className="px-4 py-2 border border-[#E5E5E5] hover:border-neutral-400 rounded-lg text-xs font-semibold text-neutral-800 transition-colors cursor-pointer disabled:opacity-50"
             >
-              {savingBlank ? "Saving to Database..." : "Create Blank Form"}
+              {savingBlank ? "Saving..." : "Save Draft"}
             </button>
+
+            {isAdmin && (
+              <button
+                type="button"
+                disabled={savingBlank}
+                onClick={() => handleSaveBlankForm(true)}
+                className="px-5 py-2 bg-[#111111] hover:bg-neutral-800 text-white rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer shadow-xs flex items-center space-x-1.5"
+              >
+                {savingBlank && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>Publish to Dashboard</span>
+              </button>
+            )}
           </div>
         </form>
       )}
@@ -810,7 +1008,7 @@ export default function CreateFormPage({ setView }) {
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center space-x-2">
-                        <span className="text-xs font-mono text-neutral-500">
+                        <span className="text-xs font-mono font-bold text-neutral-800">
                           #{idx + 1}
                         </span>
                         {f.is_uncertain && (
@@ -826,17 +1024,37 @@ export default function CreateFormPage({ setView }) {
                         )}
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const updated = generatedSchema.fields.filter((_, i) => i !== idx);
-                          setGeneratedSchema({ ...generatedSchema, fields: updated });
-                        }}
-                        className="text-neutral-400 hover:text-red-600 transition-colors cursor-pointer"
-                        title="Remove field"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      <div className="flex items-center space-x-1">
+                        <button
+                          type="button"
+                          disabled={idx === 0}
+                          onClick={() => moveGeneratedFieldUp(idx)}
+                          className="p-1 rounded text-neutral-500 hover:text-black hover:bg-neutral-100 transition-colors disabled:opacity-30 cursor-pointer"
+                          title="Move Up"
+                        >
+                          <ChevronUp className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={idx === (generatedSchema.fields?.length || 0) - 1}
+                          onClick={() => moveGeneratedFieldDown(idx)}
+                          className="p-1 rounded text-neutral-500 hover:text-black hover:bg-neutral-100 transition-colors disabled:opacity-30 cursor-pointer"
+                          title="Move Down"
+                        >
+                          <ChevronDown className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const updated = generatedSchema.fields.filter((_, i) => i !== idx);
+                            setGeneratedSchema({ ...generatedSchema, fields: updated });
+                          }}
+                          className="p-1 rounded text-neutral-400 hover:text-red-600 hover:bg-red-50 transition-colors cursor-pointer ml-1"
+                          title="Remove field"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -864,7 +1082,11 @@ export default function CreateFormPage({ setView }) {
                           value={f.type}
                           onChange={(e) => {
                             const updated = [...generatedSchema.fields];
-                            updated[idx].type = e.target.value;
+                            const newType = e.target.value;
+                            updated[idx].type = newType;
+                            if (["select", "radio"].includes(newType) && (!updated[idx].options || updated[idx].options.length === 0)) {
+                              updated[idx].options = ["Option 1", "Option 2"];
+                            }
                             setGeneratedSchema({ ...generatedSchema, fields: updated });
                           }}
                           className="w-full px-2.5 py-1.5 text-xs border border-[#E5E5E5] rounded-md focus:outline-none focus:border-neutral-900 bg-white"
@@ -897,6 +1119,46 @@ export default function CreateFormPage({ setView }) {
                       </div>
                     </div>
 
+                    {["select", "radio"].includes(f.type) && (
+                      <div className="p-3 bg-[#F7F7F7] border border-[#E5E5E5] rounded-lg space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-semibold text-neutral-700">
+                            Options for {f.type === "select" ? "Dropdown" : "Radio"}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => addGeneratedOption(idx)}
+                            className="text-[11px] text-neutral-900 hover:underline flex items-center space-x-1 cursor-pointer font-medium"
+                          >
+                            <Plus className="w-3 h-3" />
+                            <span>Add Option</span>
+                          </button>
+                        </div>
+
+                        <div className="space-y-1.5">
+                          {(f.options || []).map((opt, optIdx) => (
+                            <div key={optIdx} className="flex items-center space-x-2">
+                              <input
+                                type="text"
+                                value={opt}
+                                onChange={(e) => updateGeneratedOption(idx, optIdx, e.target.value)}
+                                placeholder={`Option ${optIdx + 1}`}
+                                className="w-full px-2 py-1 text-xs border border-[#E5E5E5] rounded bg-white focus:outline-none focus:border-neutral-900"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => removeGeneratedOption(idx, optIdx)}
+                                className="text-neutral-400 hover:text-red-600 p-1 cursor-pointer"
+                                title="Remove option"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     <div className="pt-2 flex items-center justify-between border-t border-neutral-100 text-xs">
                       <label className="flex items-center space-x-2 cursor-pointer">
                         <input
@@ -922,18 +1184,44 @@ export default function CreateFormPage({ setView }) {
           )}
 
           {/* Action to Save to SQLite */}
-          <div className="pt-6 border-t border-[#E5E5E5] flex items-center justify-between">
+          <div className="pt-6 border-t border-[#E5E5E5] flex flex-wrap items-center justify-between gap-3">
             <span className="text-xs text-neutral-500 font-mono">
               Total validated fields: {generatedSchema.fields?.length || 0}
             </span>
-            <button
-              disabled={savingSchema}
-              onClick={handleSaveToDatabase}
-              className="inline-flex items-center space-x-2 px-5 py-2.5 bg-[#111111] hover:bg-neutral-800 text-white rounded-lg text-xs font-semibold transition-all shadow-xs cursor-pointer disabled:opacity-50"
-            >
-              <span>{savingSchema ? "Persisting Form..." : "Approve & Start Voice Filling"}</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </button>
+
+            <div className="flex items-center space-x-2">
+              <button
+                type="button"
+                disabled={savingSchema}
+                onClick={() => handleSaveToDatabase(false)}
+                className="px-4 py-2 border border-[#E5E5E5] hover:border-neutral-400 rounded-lg text-xs font-semibold text-neutral-800 transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {savingSchema ? "Saving..." : "Save as Draft"}
+              </button>
+
+              {isAdmin ? (
+                <button
+                  type="button"
+                  disabled={savingSchema}
+                  onClick={() => handleSaveToDatabase(true)}
+                  className="inline-flex items-center space-x-2 px-5 py-2 bg-[#111111] hover:bg-neutral-800 text-white rounded-lg text-xs font-semibold transition-all shadow-xs cursor-pointer disabled:opacity-50"
+                >
+                  {savingSchema && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  <span>Publish to Dashboard</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={savingSchema}
+                  onClick={() => handleSaveToDatabase(false)}
+                  className="inline-flex items-center space-x-2 px-5 py-2 bg-[#111111] hover:bg-neutral-800 text-white rounded-lg text-xs font-semibold transition-all shadow-xs cursor-pointer disabled:opacity-50"
+                >
+                  {savingSchema && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  <span>Save Form & Start Filling</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}

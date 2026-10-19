@@ -14,6 +14,12 @@ from app.services.voice_mapping import (
 from app.schemas.form import is_identifier_field, is_name_field, is_valid_name
 from app.services.ai_provider import ai_provider
 from app.core.logging import logger
+from app.services.intent_service import (
+    IntentType,
+    classify_utterance_intent,
+    detect_clear_field,
+    is_command_sentence,
+)
 
 
 class ConversationManager:
@@ -93,9 +99,14 @@ class ConversationManager:
         history = list(state.get("history", []))
 
         text_lower = transcript.strip().lower()
+        cleared_fields: List[str] = []
 
-        # Initial greeting / empty transcript handler
-        if not transcript or text_lower in ["start", "hello", "hi", "hey", "vanakkam", "வணக்கம்"]:
+        # Step 1: Intent Classification
+        classification = classify_utterance_intent(transcript, fields, state)
+        intent = classification["intent"]
+
+        # 1. Intent: GENERAL_CONVERSATION or empty transcript
+        if intent == IntentType.GENERAL_CONVERSATION or not transcript:
             next_missing = self._find_next_missing_field(fields, values, confirmed_fields)
             state["current_field"] = next_missing.get("name") if next_missing else None
             form_title = schema.get("title", form.title or "form")
@@ -104,17 +115,17 @@ class ConversationManager:
             else:
                 resp = f"Hello! All required fields for {form_title} are completed. Would you like to review and confirm before submitting?"
                 state["stage"] = "confirming_submission"
-            return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, state.get("stage", "filling"), history, transcript, state=state)
+            return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, state.get("stage", "filling"), history, transcript, intent=intent, state=state)
 
-        # 1. Check for submission confirmation or submit voice commands
-        is_confirm_submit = self._is_submission_confirmation(text_lower, state.get("stage"))
-        if is_confirm_submit:
+        # 2. Intent: CONFIRM_SUBMISSION
+        if intent == IntentType.CONFIRM_SUBMISSION:
             missing_required = self._find_next_missing_field(fields, values, confirmed_fields)
             if missing_required:
                 resp = f"We cannot submit just yet because your {missing_required.get('label')} is still required. What is your {missing_required.get('label')}?"
                 state["current_field"] = missing_required.get("name")
+                state["stage"] = "filling"
                 return self._build_response(
-                    session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript, state=state
+                    session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript, intent=intent, state=state
                 )
             else:
                 return self._execute_submission(
@@ -126,68 +137,128 @@ class ConversationManager:
                     needs_review=needs_review,
                     fields=fields,
                     history=history,
-                    transcript=transcript
+                    transcript=transcript,
+                    intent=intent
                 )
 
-        # Handle user rejection or hold during submission confirmation (when not providing a correction)
-        if state.get("stage") in ("reviewing", "confirming_submission") and any(
-            w in text_lower for w in ["no", "wait", "hold on", "not yet", "cancel", "stop"]
-        ) and not any(w in text_lower for w in ["change", "update", "instead", "replace", "correct"]):
+        # 3. Intent: CANCEL_SUBMISSION
+        if intent == IntentType.CANCEL_SUBMISSION:
             resp = "Understood. Which field would you like to review or update?"
             state["stage"] = "filling"
             return self._build_response(
-                session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript, state=state
+                session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript, intent=intent, state=state
             )
+
+        # 4. Intent: CLEAR_FIELD
+        if intent == IntentType.CLEAR_FIELD:
+            target_field = classification.get("target_field")
+            if not target_field:
+                clear_match = detect_clear_field(transcript, fields, state)
+                if clear_match:
+                    target_field = clear_match[0]
+
+            if not target_field:
+                resp = "Which field would you like to clear? Please tell me the field name."
+                state["stage"] = "filling"
+                return self._build_response(
+                    session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript, intent=intent, state=state
+                )
+
+            target_name = target_field.get("name")
+            target_label = target_field.get("label", target_name)
+            ftype = target_field.get("type", "text")
+
+            # Set value to type-appropriate empty representation
+            if ftype == "checkbox":
+                empty_val = False
+            else:
+                empty_val = ""
+
+            values[target_name] = empty_val
+            confirmed_fields.discard(target_name)
+            needs_review.pop(target_name, None)
+            state["last_modified_field"] = target_name
+            state["current_field"] = target_name
+            state["stage"] = "filling"
+            cleared_fields = [target_name]
+
+            next_missing = self._find_next_missing_field(fields, values, confirmed_fields)
+            if target_field.get("required"):
+                resp = f"Cleared the {target_label} field. What is your {target_label}?"
+            else:
+                if next_missing:
+                    resp = f"Cleared the {target_label} field. What is your {next_missing.get('label')}?"
+                else:
+                    resp = f"Cleared the {target_label} field. All required fields are completed. Would you like to review and confirm before submitting?"
+                    state["stage"] = "confirming_submission"
+
+            return self._build_response(
+                session=session,
+                db=db,
+                values=values,
+                confirmed_fields=confirmed_fields,
+                needs_review=needs_review,
+                fields=fields,
+                reply=resp,
+                stage=state.get("stage", "filling"),
+                history=history,
+                user_transcript=transcript,
+                newly_filled=[],
+                cleared_fields=cleared_fields,
+                intent=intent,
+                state=state
+            )
+
+        # 5. Intent: ASK_QUESTION
+        if intent == IntentType.ASK_QUESTION:
+            inquiry_field = classification.get("target_field") or self._detect_field_inquiry(text_lower, fields)
+            if inquiry_field:
+                fname = inquiry_field.get("name")
+                flabel = inquiry_field.get("label", fname)
+                curr_val = values.get(fname)
+
+                if curr_val is not None and str(curr_val).strip() != "":
+                    if any(w in text_lower for w in ["valid", "correct", "right", "good"]):
+                        resp = f"Your {flabel} is currently recorded as '{curr_val}', and it is valid. Would you like to keep this or change it?"
+                    elif any(w in text_lower for w in ["feel like", "feels like", "look like", "looks like", "sound like", "like a name"]):
+                        resp = f"Your {flabel} is currently recorded as '{curr_val}'. It looks fine. Would you like to keep this or change it?"
+                    else:
+                        resp = f"Your {flabel} is currently recorded as '{curr_val}'. Would you like to keep this or change it?"
+                else:
+                    resp = f"You haven't entered your {flabel} yet. What is your {flabel}?"
+                    state["current_field"] = fname
+
+                return self._build_response(
+                    session, db, values, confirmed_fields, needs_review, fields, resp, state.get("stage", "filling"), history, transcript, intent=intent, state=state
+                )
+
+            # Check for general status inquiry ("Is everything entered?", "Can I review?", "Does my form look correct?")
+            if any(p in text_lower for p in ["is everything", "does my form", "check my answers", "review my answers", "how does my form"]):
+                filled_summary = [f"{f.get('label', f.get('name'))}: '{values.get(f.get('name'))}'" for f in fields if values.get(f.get('name'))]
+                next_missing = self._find_next_missing_field(fields, values, confirmed_fields)
+                if filled_summary:
+                    summary_str = ", ".join(filled_summary[:4])
+                    if len(filled_summary) > 4:
+                        summary_str += f" and {len(filled_summary) - 4} more"
+                    if next_missing:
+                        resp = f"So far, you have entered: {summary_str}. Your {next_missing.get('label')} is still needed. What is your {next_missing.get('label')}?"
+                    else:
+                        resp = f"All required fields are completed: {summary_str}. Would you like to confirm and submit the form now?"
+                        state["stage"] = "confirming_submission"
+                else:
+                    first_label = fields[0].get("label") if fields else "first detail"
+                    resp = f"No fields have been entered yet. What is your {first_label}?"
+                return self._build_response(
+                    session, db, values, confirmed_fields, needs_review, fields, resp, state.get("stage", "filling"), history, transcript, intent=intent, state=state
+                )
 
         # Check for ambiguous "that's wrong" or "no that is wrong" without specified field or replacement
         if re.search(r"\b(?:no\s*,?\s*)?(?:that(?:'s|\s+is)\s+wrong|that(?:'s|\s+is)\s+incorrect|it(?:'s|\s+is)\s+wrong)\b", text_lower):
             if not any(w in text_lower for w in ["change", "replace", "update", "to", "with", "as"]):
                 resp = "Which field is incorrect? Please tell me what to update."
-                return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript, state=state)
+                return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript, intent=intent, state=state)
 
-        # Check if the user is asking a question or inquiry about a field or form state
-        inquiry_field = self._detect_field_inquiry(text_lower, fields)
-        if inquiry_field:
-            fname = inquiry_field.get("name")
-            flabel = inquiry_field.get("label", fname)
-            curr_val = values.get(fname)
-
-            if curr_val is not None and str(curr_val).strip() != "":
-                if any(w in text_lower for w in ["valid", "correct", "right", "good"]):
-                    resp = f"Your {flabel} is currently recorded as '{curr_val}', and it is valid. Would you like to keep this or change it?"
-                elif any(w in text_lower for w in ["feel like", "feels like", "look like", "looks like", "sound like", "like a name"]):
-                    resp = f"Your {flabel} is currently recorded as '{curr_val}'. It looks fine. Would you like to keep this or change it?"
-                else:
-                    resp = f"Your {flabel} is currently recorded as '{curr_val}'. Would you like to keep this or change it?"
-            else:
-                resp = f"You haven't entered your {flabel} yet. What is your {flabel}?"
-                state["current_field"] = fname
-
-            return self._build_response(
-                session, db, values, confirmed_fields, needs_review, fields, resp, state.get("stage", "filling"), history, transcript, state=state
-            )
-
-        # Check for general status inquiry ("Is everything entered?", "Can I review?", "Does my form look correct?")
-        if any(p in text_lower for p in ["is everything", "does my form", "check my answers", "review my answers", "how does my form"]):
-            filled_summary = [f"{f.get('label', f.get('name'))}: '{values.get(f.get('name'))}'" for f in fields if values.get(f.get('name'))]
-            next_missing = self._find_next_missing_field(fields, values, confirmed_fields)
-            if filled_summary:
-                summary_str = ", ".join(filled_summary[:4])
-                if len(filled_summary) > 4:
-                    summary_str += f" and {len(filled_summary) - 4} more"
-                if next_missing:
-                    resp = f"So far, you have entered: {summary_str}. Your {next_missing.get('label')} is still needed. What is your {next_missing.get('label')}?"
-                else:
-                    resp = f"All required fields are completed: {summary_str}. Would you like to confirm and submit the form now?"
-                    state["stage"] = "confirming_submission"
-            else:
-                first_label = fields[0].get("label") if fields else "first detail"
-                resp = f"No fields have been entered yet. What is your {first_label}?"
-            return self._build_response(
-                session, db, values, confirmed_fields, needs_review, fields, resp, state.get("stage", "filling"), history, transcript, state=state
-            )
-
-        # 2. Check for standard voice navigation and control commands
+        # Voice navigation and control commands
         if any(cmd in text_lower for cmd in ["repeat the question", "repeat question", "what was the question", "repeat"]):
             curr = state.get("current_field")
             curr_label = curr
@@ -196,7 +267,7 @@ class ConversationManager:
                     curr_label = f.get("label", curr)
                     break
             resp = f"Please provide your {curr_label or 'next detail'}."
-            return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, state.get("stage", "filling"), history, transcript, state=state)
+            return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, state.get("stage", "filling"), history, transcript, intent=intent, state=state)
 
         if any(cmd in text_lower for cmd in ["skip this field", "skip field", "skip"]):
             curr = state.get("current_field")
@@ -205,7 +276,7 @@ class ConversationManager:
             next_missing = self._find_next_missing_field(fields, values, confirmed_fields)
             state["current_field"] = next_missing.get("name") if next_missing else None
             resp = f"Skipped. What is your {next_missing.get('label')}?" if next_missing else "All required fields are ready. You can review and submit your form."
-            return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript, state=state)
+            return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript, intent=intent, state=state)
 
         # 3. Check for "change the previous answer"
         newly_mapped = {}
@@ -327,16 +398,27 @@ class ConversationManager:
                 is_ident = is_identifier_field(target_field)
                 val_str = str(v).strip()
 
+                # Reject obvious command sentences or instructions targeting the field
+                if is_command_sentence(val_str):
+                    needs_review[k] = f"Command instruction ignored for {flbl}."
+                    continue
+
                 # Robust Type-specific validation
                 if is_name_field(target_field):
-                    if not is_valid_name(val_str):
+                    if not is_valid_name(val_str) or is_command_sentence(val_str):
                         needs_review[k] = f"'{v}' does not appear to be a valid name."
                         resp = f"'{v}' does not appear to be a valid name. Please provide your full name."
                         state["current_field"] = k
-                        return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript, state=state)
+                        return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript, intent=intent, state=state)
                     v = val_str
                 elif is_ident:
-                    v = normalize_spoken_identifier(val_str)
+                    norm_id = normalize_spoken_identifier(val_str)
+                    if not re.match(r"^[A-Za-z0-9_\-\+]+$", norm_id) or is_command_sentence(val_str):
+                        needs_review[k] = f"Invalid identifier for {flbl}: '{val_str}'"
+                        resp = f"'{val_str}' does not appear to be a valid {flbl}. Please provide a valid {flbl}."
+                        state["current_field"] = k
+                        return self._build_response(session, db, values, confirmed_fields, needs_review, fields, resp, "filling", history, transcript, intent=intent, state=state)
+                    v = norm_id
                 elif ftype in ("select", "radio"):
                     options = target_field.get("options") or []
                     matched_opt, is_ambig = match_dropdown_option(val_str, options)
@@ -434,6 +516,24 @@ class ConversationManager:
                         field_statuses=statuses,
                         user_speech=transcript
                     )
+                    # Check if AI identified cleared fields
+                    ai_cleared = ai_turn.get("cleared_fields", [])
+                    if isinstance(ai_cleared, list):
+                        for cf in ai_cleared:
+                            target_field = next(
+                                (f for f in fields if f.get("name") == cf or f.get("label", "").lower() == str(cf).lower()),
+                                None
+                            )
+                            if target_field:
+                                cf_name = target_field.get("name")
+                                default_val = False if target_field.get("type") == "checkbox" else ""
+                                values[cf_name] = default_val
+                                confirmed_fields.discard(cf_name)
+                                needs_review.pop(cf_name, None)
+                                if cf_name not in cleared_fields:
+                                    cleared_fields.append(cf_name)
+                                state["last_modified_field"] = cf_name
+
                     ext = ai_turn.get("extracted_fields", {})
                     for k, v in ext.items():
                         target_field = next((f for f in fields if f.get("name") == k), None)
@@ -445,6 +545,10 @@ class ConversationManager:
                         options = target_field.get("options") or []
                         val_str = str(v).strip()
 
+                        # Reject command sentences extracted by AI as values
+                        if is_command_sentence(val_str):
+                            continue
+
                         if is_name_field(target_field):
                             if not is_valid_name(val_str):
                                 needs_review[k] = f"'{v}' does not appear to be a valid name."
@@ -453,7 +557,11 @@ class ConversationManager:
                                 continue
                             v = val_str
                         elif is_ident:
-                            v = normalize_spoken_identifier(val_str)
+                            words = [w for w in re.split(r"\s+", val_str) if w]
+                            norm_id = normalize_spoken_identifier(val_str)
+                            if len(words) > 10 or not re.match(r"^[A-Za-z0-9_\-\+]+$", norm_id):
+                                continue
+                            v = norm_id
                         elif ftype in ("select", "radio") and options:
                             matched_opt, is_ambig = match_dropdown_option(val_str, options)
                             if matched_opt:
@@ -526,6 +634,8 @@ class ConversationManager:
             history=history,
             user_transcript=transcript,
             newly_filled=newly_filled,
+            cleared_fields=cleared_fields,
+            intent=intent,
             state=state,
         )
 
@@ -589,15 +699,24 @@ class ConversationManager:
         history: List[Dict[str, Any]],
         user_transcript: str,
         newly_filled: Optional[List[str]] = None,
+        cleared_fields: Optional[List[str]] = None,
         is_submitted: bool = False,
         submission_id: Optional[int] = None,
+        intent: Optional[str] = None,
         state: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        # Missing required list
+        # Missing required list independently validated against fields schema
         missing = [
             f.get("name") for f in fields
-            if f.get("required") and (values.get(f.get("name")) is None or str(values.get(f.get("name"))).strip() == "")
+            if f.get("required") and (
+                values.get(f.get("name")) is None
+                or (isinstance(values.get(f.get("name")), str) and not str(values.get(f.get("name"))).strip())
+                or values.get(f.get("name")) is False
+            )
         ]
+        is_completed = len(missing) == 0
+        if not is_completed and stage == "confirming_submission":
+            stage = "filling"
 
         history.append({"user": user_transcript, "assistant": reply})
         if len(history) > 20:
@@ -620,15 +739,17 @@ class ConversationManager:
             "assistant_response": reply,
             "updated_values": values,
             "newly_filled": newly_filled or [],
+            "cleared_fields": cleared_fields or [],
             "confirmed_fields": list(confirmed_fields),
             "missing_fields": missing,
             "needs_review": needs_review,
             "stage": stage,
-            "is_completed": len(missing) == 0,
+            "is_completed": is_completed,
             "is_submitted": is_submitted,
             "submission_id": submission_id,
             "last_modified_field": curr_state.get("last_modified_field"),
             "current_field": curr_state.get("current_field"),
+            "intent": intent,
         }
 
     def _detect_field_inquiry(self, text_lower: str, fields: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -750,10 +871,38 @@ class ConversationManager:
         history: List[Dict[str, Any]],
         transcript: str,
         newly_filled: Optional[List[str]] = None,
+        intent: Optional[str] = None,
     ) -> Dict[str, Any]:
         from app.models.submission import Submission
         from app.models.draft import Draft
         from app.services.pdf_service import generate_completed_pdf
+
+        # Strict validation: prevent submission if any required field is missing
+        missing = [
+            f.get("name") for f in fields
+            if f.get("required") and (
+                values.get(f.get("name")) is None
+                or (isinstance(values.get(f.get("name")), str) and not str(values.get(f.get("name"))).strip())
+                or values.get(f.get("name")) is False
+            )
+        ]
+        if missing:
+            missing_label = next((f.get("label", f.get("name")) for f in fields if f.get("name") == missing[0]), missing[0])
+            reply = f"We cannot submit just yet because your {missing_label} is still required. What is your {missing_label}?"
+            return self._build_response(
+                session=session,
+                db=db,
+                values=values,
+                confirmed_fields=confirmed_fields,
+                needs_review=needs_review,
+                fields=fields,
+                reply=reply,
+                stage="filling",
+                history=history,
+                user_transcript=transcript,
+                newly_filled=newly_filled,
+                intent=intent,
+            )
 
         # 1. Create submission record in database
         new_sub = Submission(
@@ -817,6 +966,7 @@ class ConversationManager:
             "assistant_response": reply,
             "updated_values": values,
             "newly_filled": newly_filled or [],
+            "cleared_fields": [],
             "confirmed_fields": list(confirmed_fields),
             "missing_fields": [],
             "needs_review": needs_review,
@@ -824,6 +974,7 @@ class ConversationManager:
             "is_completed": True,
             "is_submitted": True,
             "submission_id": new_sub.id,
+            "intent": intent,
         }
 
 

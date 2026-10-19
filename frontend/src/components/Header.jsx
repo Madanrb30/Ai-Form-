@@ -30,7 +30,7 @@ export default function Header({ currentView, setView }) {
         if (!ignore) setLoading(false);
       });
 
-    const interval = setInterval(checkHealth, 30000);
+    const interval = setInterval(checkHealth, 120000); // 2-minute interval
     return () => {
       ignore = true;
       clearInterval(interval);

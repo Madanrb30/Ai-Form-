@@ -31,7 +31,7 @@ export default function Header({ currentView, setView, onOpenMobileMenu, searchQ
         if (!ignore) setChecking(false);
       });
 
-    const interval = setInterval(checkHealth, 25000);
+    const interval = setInterval(checkHealth, 120000); // Poll health every 2 minutes
     return () => {
       ignore = true;
       clearInterval(interval);

@@ -8,3 +8,5 @@ class TranscriptionResponse(BaseModel):
     duration: Optional[float] = Field(default=None, description="Audio duration in seconds if available")
     language: str = Field(default="en", description="Detected or requested language code")
     provider: str = Field(default="groq", description="STT provider used ('groq' or 'sarvam')")
+    fallback_used: Optional[bool] = Field(default=False, description="Whether fallback provider was utilized")
+    fallback_reason: Optional[str] = Field(default=None, description="Reason fallback provider was utilized")

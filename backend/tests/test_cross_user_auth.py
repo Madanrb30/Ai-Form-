@@ -8,23 +8,31 @@ from app.core.security import get_password_hash, create_access_token
 
 @pytest.fixture
 def users_and_tokens(db_session):
-    # User 1: Alice
+    # User 1: Alice (Admin)
     u1 = User(
         email="alice@company.org",
         hashed_password=get_password_hash("AlicePassword123!"),
         full_name="Alice Smith",
-        role="Manager",
+        role="ADMIN",
         avatar="AS"
     )
-    # User 2: Bob
+    # User 2: Bob (Regular User)
     u2 = User(
         email="bob@company.org",
         hashed_password=get_password_hash("BobPassword123!"),
         full_name="Bob Jones",
-        role="Engineer",
+        role="USER",
         avatar="BJ"
     )
-    # User 3: Admin
+    # User 3: Charlie (Regular User)
+    u3 = User(
+        email="charlie@company.org",
+        hashed_password=get_password_hash("CharliePassword123!"),
+        full_name="Charlie Brown",
+        role="USER",
+        avatar="CB"
+    )
+    # User 4: Admin
     u_admin = User(
         email="admin@company.org",
         hashed_password=get_password_hash("AdminPassword123!"),
@@ -32,22 +40,26 @@ def users_and_tokens(db_session):
         role="ADMIN",
         avatar="AD"
     )
-    db_session.add_all([u1, u2, u_admin])
+    db_session.add_all([u1, u2, u3, u_admin])
     db_session.commit()
     db_session.refresh(u1)
     db_session.refresh(u2)
+    db_session.refresh(u3)
     db_session.refresh(u_admin)
 
-    token1 = create_access_token(u1.id)
-    token2 = create_access_token(u2.id)
-    token_admin = create_access_token(u_admin.id)
+    token1 = create_access_token(u1.id, role=u1.role)
+    token2 = create_access_token(u2.id, role=u2.role)
+    token3 = create_access_token(u3.id, role=u3.role)
+    token_admin = create_access_token(u_admin.id, role=u_admin.role)
 
     return {
         "alice": u1,
         "bob": u2,
+        "charlie": u3,
         "admin": u_admin,
         "token_alice": token1,
         "token_bob": token2,
+        "token_charlie": token3,
         "token_admin": token_admin,
     }
 
@@ -98,6 +110,14 @@ def test_cross_user_form_modification_and_deletion(client, users_and_tokens):
         headers={"Authorization": f"Bearer {token_bob}"}
     )
     assert del_res_bob.status_code == 403
+
+    # Bob (USER) attempts to CREATE a form -> 403 Forbidden
+    create_res_bob = client.post(
+        "/api/forms",
+        json=payload,
+        headers={"Authorization": f"Bearer {token_bob}"}
+    )
+    assert create_res_bob.status_code == 403
 
     # Anonymous user attempts to DELETE Alice's form -> 401 Unauthorized
     del_res_anon = client.delete(f"/api/forms/{form_id}")
@@ -355,7 +375,7 @@ def test_submission_isolation_on_shared_form(client, users_and_tokens):
     On a shared form, regular users only see their own submissions.
     Admins can view all submissions for administrative oversight.
     """
-    token_alice = users_and_tokens["token_alice"]
+    token_charlie = users_and_tokens["token_charlie"]
     token_bob = users_and_tokens["token_bob"]
     token_admin = users_and_tokens["token_admin"]
 
@@ -374,14 +394,14 @@ def test_submission_isolation_on_shared_form(client, users_and_tokens):
     )
     form_id = form_res.json()["id"]
 
-    # Alice submits response
-    sub_alice_res = client.post(
+    # Charlie submits response
+    sub_charlie_res = client.post(
         f"/api/forms/{form_id}/submissions",
         json={"response_json": {"diet": "Vegetarian"}},
-        headers={"Authorization": f"Bearer {token_alice}"}
+        headers={"Authorization": f"Bearer {token_charlie}"}
     )
-    assert sub_alice_res.status_code == 201
-    sub_alice_id = sub_alice_res.json()["id"]
+    assert sub_charlie_res.status_code == 201
+    sub_charlie_id = sub_charlie_res.json()["id"]
 
     # Bob submits response
     sub_bob_res = client.post(
@@ -392,14 +412,14 @@ def test_submission_isolation_on_shared_form(client, users_and_tokens):
     assert sub_bob_res.status_code == 201
     sub_bob_id = sub_bob_res.json()["id"]
 
-    # Alice lists submissions -> gets only her 1 submission
-    alice_list = client.get(
+    # Charlie lists submissions -> gets only their 1 submission
+    charlie_list = client.get(
         f"/api/forms/{form_id}/submissions",
-        headers={"Authorization": f"Bearer {token_alice}"}
+        headers={"Authorization": f"Bearer {token_charlie}"}
     )
-    assert alice_list.status_code == 200
-    alice_sub_ids = [s["id"] for s in alice_list.json()]
-    assert alice_sub_ids == [sub_alice_id]
+    assert charlie_list.status_code == 200
+    charlie_sub_ids = [s["id"] for s in charlie_list.json()]
+    assert charlie_sub_ids == [sub_charlie_id]
 
     # Bob lists submissions -> gets only his 1 submission
     bob_list = client.get(
@@ -410,9 +430,9 @@ def test_submission_isolation_on_shared_form(client, users_and_tokens):
     bob_sub_ids = [s["id"] for s in bob_list.json()]
     assert bob_sub_ids == [sub_bob_id]
 
-    # Bob attempts to download Alice's submission PDF -> 403 Forbidden
+    # Bob attempts to download Charlie's submission PDF -> 403 Forbidden
     cross_pdf_res = client.get(
-        f"/api/forms/{form_id}/submissions/{sub_alice_id}/pdf",
+        f"/api/forms/{form_id}/submissions/{sub_charlie_id}/pdf",
         headers={"Authorization": f"Bearer {token_bob}"}
     )
     assert cross_pdf_res.status_code == 403
@@ -424,7 +444,7 @@ def test_submission_isolation_on_shared_form(client, users_and_tokens):
     )
     assert admin_list.status_code == 200
     admin_sub_ids = [s["id"] for s in admin_list.json()]
-    assert sub_alice_id in admin_sub_ids
+    assert sub_charlie_id in admin_sub_ids
     assert sub_bob_id in admin_sub_ids
 
 

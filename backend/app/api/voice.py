@@ -42,12 +42,21 @@ async def transcribe_speech(
     filename = file.filename or "recording.webm"
     ext = os.path.splitext(filename)[1].lower()
 
+    raw_content_type = file.content_type or ""
+    clean_mime = raw_content_type.split(";")[0].strip().lower()
+
     # Fallback extension if generic blob name
     if not ext:
-        if file.content_type and "wav" in file.content_type:
+        if clean_mime in ("audio/wav", "audio/x-wav", "audio/wave"):
             ext = ".wav"
-        elif file.content_type and "mp4" in file.content_type:
+        elif clean_mime in ("audio/mp4", "audio/x-m4a", "video/mp4"):
             ext = ".mp4"
+        elif clean_mime in ("audio/ogg", "application/ogg"):
+            ext = ".ogg"
+        elif clean_mime in ("audio/mpeg", "audio/mp3"):
+            ext = ".mp3"
+        elif clean_mime in ("audio/flac", "audio/x-flac"):
+            ext = ".flac"
         else:
             ext = ".webm"
         filename = f"recording{ext}"
@@ -60,8 +69,20 @@ async def transcribe_speech(
 
     audio_bytes = await file.read()
 
-    # 1. Reject empty recordings (0 bytes)
+    # Import container inspector for safe diagnostic logging and validation
+    from app.services.stt.sarvam_provider import detect_audio_container
+    detected_container = detect_audio_container(audio_bytes)
+
+    # Safe diagnostic logging (metadata only; NO audio contents, tokens, or user data)
+    logger.info(
+        f"Audio upload received: byte_length={len(audio_bytes)}, "
+        f"normalized_mime='{clean_mime}', detected_container='{detected_container}', "
+        f"filename_ext='{ext}'"
+    )
+
+    # 1. Reject empty recordings
     if not audio_bytes or len(audio_bytes) == 0:
+        logger.warning("Rejected empty audio payload (0 bytes).")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Audio recording is empty (0 bytes). Please record again."
@@ -75,9 +96,26 @@ async def transcribe_speech(
             detail=f"Audio file exceeds maximum size limit of {max_mb} MB."
         )
 
-    # 3. Transcribe via Groq Whisper API
+    # 3. Reject undersized audio in non-testing environments (< 200 bytes contains no decodable speech frames)
+    if getattr(settings, "ENVIRONMENT", "") != "testing" and len(audio_bytes) < 200:
+        logger.warning(f"Rejected undersized audio payload: {len(audio_bytes)} bytes.")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Audio recording contains no decodable speech (under 200 bytes). Please record again."
+        )
+
+    # 3. Align filename extension with genuine detected container format
+    if detected_container:
+        expected_ext = f".{detected_container}"
+        if detected_container == "mp3":
+            expected_ext = ".mp3"
+        if ext != expected_ext:
+            filename = f"{os.path.splitext(filename)[0]}{expected_ext}"
+            ext = expected_ext
+
+    # 4. Transcribe via configured STT provider (Sarvam AI or Groq Whisper)
     try:
-        content_type = file.content_type or "audio/webm"
+        content_type = clean_mime or "audio/webm"
         result = ai_provider.transcribe_audio(
             audio_bytes=audio_bytes,
             filename=filename,

@@ -20,14 +20,14 @@ def auth_fixtures(db_session):
         email="alice_sec@example.com",
         hashed_password=get_password_hash("StrongAlicePass123!"),
         full_name="Alice Sec",
-        role="User",
+        role="ADMIN",
         avatar="AS",
     )
     u2 = User(
         email="bob_sec@example.com",
         hashed_password=get_password_hash("StrongBobPass123!"),
         full_name="Bob Sec",
-        role="User",
+        role="USER",
         avatar="BS",
     )
     db_session.add_all([u1, u2])
@@ -38,9 +38,9 @@ def auth_fixtures(db_session):
     return {
         "alice": u1,
         "bob": u2,
-        "token_alice": create_access_token(u1.id),
-        "token_bob": create_access_token(u2.id),
-        "expired_token_alice": create_access_token(u1.id, expires_delta=timedelta(seconds=-10)),
+        "token_alice": create_access_token(u1.id, role=u1.role),
+        "token_bob": create_access_token(u2.id, role=u2.role),
+        "expired_token_alice": create_access_token(u1.id, role=u1.role, expires_delta=timedelta(seconds=-10)),
     }
 
 
@@ -337,6 +337,7 @@ def test_auth_login_rate_limiting(client):
 
 def test_unowned_shared_template_cannot_be_modified_or_deleted(client, db_session, auth_fixtures):
     token_alice = auth_fixtures["token_alice"]
+    token_bob = auth_fixtures["token_bob"]
 
     # Create unowned shared system template (user_id is None)
     template = Form(
@@ -359,18 +360,27 @@ def test_unowned_shared_template_cannot_be_modified_or_deleted(client, db_sessio
     # 2. Regular authenticated user cannot update or delete unowned template
     put_res = client.put(
         f"/api/forms/{template.id}",
-        json={"title": "Alice Modified Template"},
-        headers={"Authorization": f"Bearer {token_alice}"}
+        json={"title": "Bob Modified Template"},
+        headers={"Authorization": f"Bearer {token_bob}"}
     )
     assert put_res.status_code == 403
-    assert "shared system template" in put_res.json()["detail"].lower()
+    assert "permission" in put_res.json()["detail"].lower() or "shared system template" in put_res.json()["detail"].lower()
 
     del_res = client.delete(
         f"/api/forms/{template.id}",
-        headers={"Authorization": f"Bearer {token_alice}"}
+        headers={"Authorization": f"Bearer {token_bob}"}
     )
     assert del_res.status_code == 403
-    assert "shared system template" in del_res.json()["detail"].lower()
+    assert "permission" in del_res.json()["detail"].lower() or "shared system template" in del_res.json()["detail"].lower()
+
+    # 3. Regular authenticated user cannot create persistent forms
+    create_denied = client.post(
+        "/api/forms",
+        json={"title": "Bob Forbidden Form", "schema_json": {"title": "Bob Form", "fields": [{"name": "item", "label": "Item", "type": "text"}]}},
+        headers={"Authorization": f"Bearer {token_bob}"}
+    )
+    assert create_denied.status_code == 403
+    assert "permission" in create_denied.json()["detail"].lower()
 
 
 def test_submission_history_isolation_on_public_form(client, auth_fixtures):

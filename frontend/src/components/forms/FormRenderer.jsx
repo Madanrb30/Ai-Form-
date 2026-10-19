@@ -1,5 +1,5 @@
 import React from "react";
-import { Sparkles } from "lucide-react";
+import { Sparkles, FileText, AlertTriangle, Edit3 } from "lucide-react";
 
 export default function FormRenderer({
   schema,
@@ -9,6 +9,11 @@ export default function FormRenderer({
   disabled = false,
   highlightedFields = [],
   aiFilledFields = [],
+  pdfFilledFields = [],
+  needsReviewFields = {},
+  manuallyEditedFields = [],
+  missingFields = [],
+  onFieldManualEdit,
 }) {
   if (!schema || !schema.fields || schema.fields.length === 0) {
     return (
@@ -20,6 +25,9 @@ export default function FormRenderer({
 
   const handleInputChange = (name, value) => {
     if (disabled || !onChange) return;
+    if (onFieldManualEdit) {
+      onFieldManualEdit(name);
+    }
     onChange({
       ...values,
       [name]: value,
@@ -28,6 +36,9 @@ export default function FormRenderer({
 
   const handleCheckboxChange = (name, checked) => {
     if (disabled || !onChange) return;
+    if (onFieldManualEdit) {
+      onFieldManualEdit(name);
+    }
     onChange({
       ...values,
       [name]: checked,
@@ -43,7 +54,11 @@ export default function FormRenderer({
             : (field.default_value ?? "");
         const error = errors[field.name];
         const isHighlighted = highlightedFields.includes(field.name);
-        const isAiFilled = aiFilledFields.includes(field.name);
+        const isPdfFilled = pdfFilledFields.includes(field.name);
+        const isAiFilled = aiFilledFields.includes(field.name) && !isPdfFilled;
+        const isManuallyEdited = manuallyEditedFields.includes(field.name);
+        const reviewNote = needsReviewFields[field.name];
+        const isMissing = missingFields.includes(field.name) || (field.required && (value === undefined || value === null || String(value).trim() === "" || value === false));
 
         return (
           <div
@@ -51,6 +66,8 @@ export default function FormRenderer({
             className={`p-3.5 rounded-xl border transition-all duration-300 text-left ${
               isHighlighted
                 ? "border-neutral-900 bg-neutral-50 ai-field-highlight ring-1 ring-neutral-900/10"
+                : reviewNote
+                ? "border-amber-300 bg-amber-50/30"
                 : "border-[#E5E5E5] bg-white hover:border-neutral-300"
             }`}
           >
@@ -66,13 +83,36 @@ export default function FormRenderer({
                     *
                   </span>
                 )}
+                {isMissing && isPdfFilled === false && field.required && (
+                  <span className="text-[10px] text-neutral-400 font-normal font-mono italic">
+                    (Incomplete)
+                  </span>
+                )}
               </label>
 
-              <div className="flex items-center space-x-1.5">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {isPdfFilled && (
+                  <span className="inline-flex items-center space-x-1 text-[10px] font-mono px-1.5 py-0.5 rounded bg-neutral-900 text-white">
+                    <FileText className="w-2.5 h-2.5 text-neutral-300" />
+                    <span>From PDF</span>
+                  </span>
+                )}
                 {isAiFilled && (
                   <span className="inline-flex items-center space-x-1 text-[10px] font-mono px-1.5 py-0.5 rounded bg-neutral-900 text-white">
                     <Sparkles className="w-2.5 h-2.5 text-neutral-200" />
                     <span>AI Filled</span>
+                  </span>
+                )}
+                {isManuallyEdited && (
+                  <span className="inline-flex items-center space-x-1 text-[10px] font-mono px-1.5 py-0.5 rounded bg-neutral-100 text-neutral-700 border border-neutral-300">
+                    <Edit3 className="w-2.5 h-2.5 text-neutral-500" />
+                    <span>Edited</span>
+                  </span>
+                )}
+                {reviewNote && (
+                  <span className="inline-flex items-center space-x-1 text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300">
+                    <AlertTriangle className="w-2.5 h-2.5 text-amber-600" />
+                    <span>Review Needed</span>
                   </span>
                 )}
                 <span className="text-[10px] font-mono text-neutral-400 bg-neutral-100 px-1.5 py-0.5 rounded">
@@ -93,6 +133,8 @@ export default function FormRenderer({
                 className={`w-full px-3 py-2 text-xs rounded-lg border bg-white focus:outline-none transition-all ${
                   error
                     ? "border-red-500 focus:ring-1 focus:ring-red-500"
+                    : reviewNote
+                    ? "border-amber-300 focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
                     : "border-[#E5E5E5] focus:border-neutral-900 focus:ring-1 focus:ring-neutral-900"
                 } disabled:bg-neutral-100 disabled:text-neutral-400`}
               />
@@ -109,6 +151,8 @@ export default function FormRenderer({
                 className={`w-full px-3 py-2 text-xs rounded-lg border bg-white focus:outline-none transition-all ${
                   error
                     ? "border-red-500 focus:ring-1 focus:ring-red-500"
+                    : reviewNote
+                    ? "border-amber-300 focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
                     : "border-[#E5E5E5] focus:border-neutral-900 focus:ring-1 focus:ring-neutral-900"
                 } disabled:bg-neutral-100 disabled:text-neutral-400`}
               />
@@ -125,6 +169,8 @@ export default function FormRenderer({
                 className={`w-full px-3 py-2 text-xs rounded-lg border bg-white focus:outline-none transition-all ${
                   error
                     ? "border-red-500 focus:ring-1 focus:ring-red-500"
+                    : reviewNote
+                    ? "border-amber-300 focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
                     : "border-[#E5E5E5] focus:border-neutral-900 focus:ring-1 focus:ring-neutral-900"
                 } disabled:bg-neutral-100 disabled:text-neutral-400`}
               />
@@ -140,6 +186,8 @@ export default function FormRenderer({
                 className={`w-full px-3 py-2 text-xs rounded-lg border bg-white focus:outline-none transition-all ${
                   error
                     ? "border-red-500 focus:ring-1 focus:ring-red-500"
+                    : reviewNote
+                    ? "border-amber-300 focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
                     : "border-[#E5E5E5] focus:border-neutral-900 focus:ring-1 focus:ring-neutral-900"
                 } disabled:bg-neutral-100 disabled:text-neutral-400`}
               />
@@ -156,6 +204,8 @@ export default function FormRenderer({
                 className={`w-full px-3 py-2 text-xs rounded-lg border bg-white focus:outline-none transition-all ${
                   error
                     ? "border-red-500 focus:ring-1 focus:ring-red-500"
+                    : reviewNote
+                    ? "border-amber-300 focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
                     : "border-[#E5E5E5] focus:border-neutral-900 focus:ring-1 focus:ring-neutral-900"
                 } disabled:bg-neutral-100 disabled:text-neutral-400`}
               />
@@ -170,6 +220,8 @@ export default function FormRenderer({
                 className={`w-full px-3 py-2 text-xs rounded-lg border bg-white focus:outline-none transition-all ${
                   error
                     ? "border-red-500 focus:ring-1 focus:ring-red-500"
+                    : reviewNote
+                    ? "border-amber-300 focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
                     : "border-[#E5E5E5] focus:border-neutral-900 focus:ring-1 focus:ring-neutral-900"
                 } disabled:bg-neutral-100 disabled:text-neutral-400`}
               >
@@ -218,6 +270,16 @@ export default function FormRenderer({
                   </label>
                 ))}
               </div>
+            )}
+
+            {/* Review Note Notice */}
+            {reviewNote && (
+              <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-1.5 mt-2 font-mono flex items-start space-x-1.5">
+                <AlertTriangle className="w-3 h-3 text-amber-600 shrink-0 mt-0.5" />
+                <span>
+                  <strong className="font-semibold">Review note:</strong> {reviewNote}
+                </span>
+              </p>
             )}
 
             {/* Error Message */}

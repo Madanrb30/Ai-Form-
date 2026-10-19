@@ -19,8 +19,8 @@ export default function Sidebar({ currentView, setView, isMobileOpen, setIsMobil
 
   const navItems = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-    { id: "forms", label: "My Forms", icon: FileText },
-    { id: "create", label: "Create Form", icon: PlusCircle },
+    { id: "forms", label: isAdmin ? "Forms" : "Available Forms", icon: FileText },
+    ...(isAdmin ? [{ id: "create", label: "Create Form", icon: PlusCircle }] : []),
     { id: "history", label: "History", icon: History },
     { id: "settings", label: "Settings", icon: Settings },
     ...(isAdmin ? [{ id: "admin", label: "Admin Console", icon: ShieldCheck }] : []),
