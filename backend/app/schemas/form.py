@@ -1,4 +1,5 @@
 import re
+import math
 import warnings
 from datetime import datetime
 from typing import List, Optional, Literal, Any, Dict
@@ -13,24 +14,120 @@ warnings.filterwarnings(
 
 FieldType = Literal[
     "text",
-    "email",
-    "number",
-    "date",
     "textarea",
+    "number",
+    "email",
+    "phone",
+    "date",
+    "time",
+    "datetime",
     "select",
-    "checkbox",
     "radio",
+    "checkbox",
+    "url",
 ]
 
 
+def normalize_boolean(val: Any) -> Optional[bool]:
+    """
+    Normalizes arbitrary values to strict booleans without treating
+    the string "false", "0", or "no" as True.
+    """
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        if math.isnan(val) or math.isinf(val):
+            return False
+        return bool(val)
+    if isinstance(val, str):
+        s = val.strip().lower()
+        if s in ("true", "1", "yes", "on", "t"):
+            return True
+        if s in ("false", "0", "no", "off", "f", ""):
+            return False
+    return bool(val)
+
+
+def sanitize_json_value(val: Any) -> Any:
+    """
+    Recursively sanitizes values to ensure strict JSON serializability.
+    Converts pypdf objects (ByteStringObject, TextStringObject, NameObject,
+    DictionaryObject, ArrayObject), bytes, non-UTF-8 data, and signature
+    containers into clean JSON-serializable primitives (str, int, float, bool, None,
+    list, dict).
+    """
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+            return None
+        return val
+    if isinstance(val, (bytes, bytearray)):
+        # Attempt standard decodings for PDF and binary strings
+        for enc in ("utf-16", "utf-8", "latin-1"):
+            try:
+                decoded = val.decode(enc).strip("\x00").strip()
+                if all(ord(c) >= 32 or c in "\n\r\t" for c in decoded):
+                    return decoded
+            except Exception:
+                pass
+        # Fallback to UTF-8 with replacement for any remaining non-UTF-8 bytes
+        cleaned = val.decode("utf-8", errors="replace").strip("\x00").strip()
+        return cleaned if cleaned else None
+
+    # Handle dictionary-like objects (e.g. pypdf DictionaryObject or dict)
+    if isinstance(val, dict):
+        # Digital signature dictionary (/Type == '/Sig' or contains /Contents)
+        if val.get("/Type") == "/Sig" or "/Contents" in val:
+            signer = val.get("/Name") or val.get("/Reason")
+            return sanitize_json_value(signer) if signer else None
+
+        clean_dict = {}
+        for k, v in val.items():
+            k_str = str(k).lstrip("/")
+            if k_str in ("Contents", "Cert", "ByteRange"):
+                continue
+            sanitized_v = sanitize_json_value(v)
+            if sanitized_v is not None:
+                clean_dict[k_str] = sanitized_v
+        return clean_dict if clean_dict else None
+
+    # Handle list-like objects (e.g. pypdf ArrayObject, list, tuple, set)
+    if isinstance(val, (list, tuple, set)):
+        clean_list = [sanitize_json_value(x) for x in val]
+        return [x for x in clean_list if x is not None]
+
+    # Handle string-like objects (e.g. pypdf TextStringObject, NameObject, str)
+    if isinstance(val, str):
+        return str(val).replace("\x00", "").strip()
+
+    # Fallback for other objects: convert to string
+    try:
+        return str(val)
+    except Exception:
+        return None
+
+
 class FormFieldSchema(BaseModel):
+    id: Optional[str] = Field(default=None, description="Stable internal field identifier")
     name: str = Field(..., description="Unique machine-readable field identifier")
     label: str = Field(..., description="Human-readable field label")
     type: FieldType = Field(..., description="Input control type")
     required: bool = Field(default=False, description="Whether the field is mandatory")
     placeholder: Optional[str] = Field(default=None, description="Input placeholder text")
+    description: Optional[str] = Field(default=None, description="Field help text or instructions")
     options: Optional[List[str]] = Field(default=None, description="Options for select, radio, or multi-checkbox")
     default_value: Optional[Any] = Field(default=None, description="Initial default value")
+    min_value: Optional[float] = Field(default=None, description="Minimum numeric value for number fields")
+    max_value: Optional[float] = Field(default=None, description="Maximum numeric value for number fields")
+    step: Optional[float] = Field(default=None, description="Step increment for number fields")
+    min_length: Optional[int] = Field(default=None, description="Minimum character length")
+    max_length: Optional[int] = Field(default=None, description="Maximum character length")
+    pattern: Optional[str] = Field(default=None, description="Custom regex pattern for validation")
     source_page: Optional[int] = Field(default=None, description="Source page number where field was detected")
     confidence: Optional[float] = Field(default=None, description="Confidence score between 0.0 and 1.0")
     is_uncertain: Optional[bool] = Field(default=False, description="Flagged for user review if ambiguous")
@@ -39,6 +136,11 @@ class FormFieldSchema(BaseModel):
         default=False,
         description="Whether this field represents an alphanumeric identifier (register number, student ID, roll number, postal code, phone, etc.)"
     )
+
+    @field_validator("extracted_value", "default_value", mode="before")
+    @classmethod
+    def sanitize_field_values(cls, v: Any) -> Any:
+        return sanitize_json_value(v)
 
     @field_validator("type", mode="before")
     @classmethod
@@ -49,15 +151,19 @@ class FormFieldSchema(BaseModel):
         mapping = {
             "string": "text",
             "str": "text",
-            "phone": "text",
-            "tel": "text",
-            "mobile": "text",
-            "url": "text",
-            "file": "text",
+            "phone": "phone",
+            "tel": "phone",
+            "mobile": "phone",
+            "telephone": "phone",
+            "url": "url",
+            "uri": "url",
+            "link": "url",
+            "website": "url",
             "int": "number",
             "integer": "number",
             "float": "number",
             "decimal": "number",
+            "numeric": "number",
             "dropdown": "select",
             "choice": "select",
             "combobox": "select",
@@ -66,11 +172,28 @@ class FormFieldSchema(BaseModel):
             "multi-line": "textarea",
             "multiline": "textarea",
             "paragraph": "textarea",
-            "datetime": "date",
-            "time": "text",
+            "datetime": "datetime",
+            "datetime-local": "datetime",
+            "timestamp": "datetime",
+            "time": "time",
+            "date": "date",
         }
         mapped = mapping.get(v_clean, v_clean)
-        if mapped not in ("text", "email", "number", "date", "textarea", "select", "checkbox", "radio"):
+        allowed = (
+            "text",
+            "textarea",
+            "number",
+            "email",
+            "phone",
+            "date",
+            "time",
+            "datetime",
+            "select",
+            "radio",
+            "checkbox",
+            "url",
+        )
+        if mapped not in allowed:
             return "text"
         return mapped
 
@@ -98,13 +221,139 @@ class FormFieldSchema(BaseModel):
             v_str = v_str[:128].strip()
         return v_str
 
-
     @model_validator(mode="after")
     def validate_choice_options(self):
-        if self.type in ("select", "radio") and not self.options:
-            self.options = ["Option 1", "Option 2"]
+        if not self.id:
+            self.id = f"f_{self.name}"
+
+        # 1. Checkbox field handling
+        if self.type == "checkbox":
+            self.options = None
+            self.min_value = None
+            self.max_value = None
+            self.step = None
+            self.min_length = None
+            self.max_length = None
+            self.pattern = None
+            self.default_value = normalize_boolean(self.default_value) if self.default_value is not None else False
+
+        # 2. Select & Radio choice fields
+        elif self.type in ("select", "radio"):
+            self.min_value = None
+            self.max_value = None
+            self.step = None
+            self.min_length = None
+            self.max_length = None
+            self.pattern = None
+
+            if not self.options or len(self.options) == 0:
+                self.options = ["Option 1", "Option 2"]
+            else:
+                # Deduplicate while preserving order and rejecting empty options
+                seen_opts = set()
+                clean_opts = []
+                for o in self.options:
+                    cleaned_o = str(o).strip()
+                    if cleaned_o and cleaned_o not in seen_opts:
+                        seen_opts.add(cleaned_o)
+                        clean_opts.append(cleaned_o)
+                self.options = clean_opts if clean_opts else ["Option 1", "Option 2"]
+
+            # Saved default must belong to the final list of valid options
+            if self.default_value is not None:
+                val_str = str(self.default_value).strip()
+                if val_str in self.options:
+                    self.default_value = val_str
+                else:
+                    self.default_value = None
+
+        # 3. Numeric fields
+        elif self.type == "number":
+            self.options = None
+            self.min_length = None
+            self.max_length = None
+            self.pattern = None
+
+            if self.min_value is not None:
+                if math.isnan(self.min_value) or math.isinf(self.min_value):
+                    raise ValueError(f"Field '{self.label}': Minimum value must be a finite number.")
+            if self.max_value is not None:
+                if math.isnan(self.max_value) or math.isinf(self.max_value):
+                    raise ValueError(f"Field '{self.label}': Maximum value must be a finite number.")
+            if self.step is not None:
+                if math.isnan(self.step) or math.isinf(self.step) or self.step <= 0:
+                    raise ValueError(f"Field '{self.label}': Step must be a positive finite number.")
+            if self.min_value is not None and self.max_value is not None and self.min_value > self.max_value:
+                raise ValueError(f"Field '{self.label}': Minimum value ({self.min_value}) cannot exceed maximum value ({self.max_value}).")
+
+            if self.default_value is not None and str(self.default_value).strip() != "":
+                try:
+                    num = float(self.default_value)
+                    if math.isnan(num) or math.isinf(num):
+                        self.default_value = None
+                    else:
+                        # Validate against bounds if set
+                        if self.min_value is not None and num < self.min_value:
+                            self.default_value = None
+                        elif self.max_value is not None and num > self.max_value:
+                            self.default_value = None
+                        else:
+                            self.default_value = num
+                except (ValueError, TypeError):
+                    self.default_value = None
+            else:
+                self.default_value = None
+
+        # 4. Text & String fields
+        elif self.type in ("text", "textarea", "email", "phone", "url"):
+            self.options = None
+            self.min_value = None
+            self.max_value = None
+            self.step = None
+
+            if self.min_length is not None:
+                if self.min_length < 0:
+                    raise ValueError(f"Field '{self.label}': Minimum length cannot be negative.")
+            if self.max_length is not None:
+                if self.max_length < 0:
+                    raise ValueError(f"Field '{self.label}': Maximum length cannot be negative.")
+            if self.min_length is not None and self.max_length is not None and self.min_length > self.max_length:
+                raise ValueError(f"Field '{self.label}': Minimum length ({self.min_length}) cannot exceed maximum length ({self.max_length}).")
+
+            if self.pattern and str(self.pattern).strip():
+                pat_str = str(self.pattern).strip()
+                try:
+                    re.compile(pat_str)
+                    self.pattern = pat_str
+                except re.error as e:
+                    raise ValueError(f"Field '{self.label}': Invalid regular expression pattern: {e}")
+            else:
+                self.pattern = None
+
+            if self.default_value is not None:
+                if isinstance(self.default_value, bool):
+                    self.default_value = None
+                else:
+                    self.default_value = str(self.default_value).strip() or None
+
+        # 5. Date / Time fields
+        else:
+            self.options = None
+            self.min_value = None
+            self.max_value = None
+            self.step = None
+            self.min_length = None
+            self.max_length = None
+            self.pattern = None
+
+            if self.default_value is not None:
+                if isinstance(self.default_value, bool):
+                    self.default_value = None
+                else:
+                    self.default_value = str(self.default_value).strip() or None
+
         # Automatically detect identifier fields if not explicitly configured
-        if not self.is_identifier and is_identifier_field({"name": self.name, "label": self.label}):
+        if not self.is_identifier and (self.type == "phone" or is_identifier_field({"name": self.name, "label": self.label})):
             self.is_identifier = True
         return self
 
@@ -215,12 +464,34 @@ def is_valid_name(val: Any) -> bool:
 class FormSchemaDefinition(BaseModel):
     title: str = Field(..., min_length=1, max_length=255, description="Title of the form")
     description: Optional[str] = Field(default=None, max_length=1000, description="Brief description")
+    category: Optional[str] = Field(default="General", max_length=100, description="Form category (e.g. Education, Careers, General)")
     fields: List[FormFieldSchema] = Field(..., min_length=1, max_length=50, description="List of form fields")
 
+    @field_validator("category", mode="before")
+    @classmethod
+    def validate_category(cls, v: Any) -> str:
+        if v is None:
+            return "General"
+        v_str = str(v).strip()
+        return v_str if v_str else "General"
+
     @model_validator(mode="after")
-    def validate_unique_field_names(self):
+    def validate_unique_field_identity(self):
         names = set()
-        for f in self.fields:
+        ids = set()
+        for idx, f in enumerate(self.fields):
+            # Guarantee stable unique field id
+            if not f.id or str(f.id).strip() == "":
+                f.id = f"f_{f.name}_{idx + 1}"
+            elif f.id in ids:
+                base_id = f.id
+                counter = 2
+                while f"{base_id}_{counter}" in ids:
+                    counter += 1
+                f.id = f"{base_id}_{counter}"
+            ids.add(f.id)
+
+            # Guarantee unique field name
             if f.name in names:
                 base_name = f.name
                 counter = 2

@@ -19,6 +19,7 @@ from app.schemas.form import (
     is_identifier_field,
     is_name_field,
     is_valid_name,
+    sanitize_json_value,
 )
 from app.services.ai_provider import ai_provider, AIProviderError
 from app.services.ai_service import generate_demo_form_schema
@@ -52,10 +53,15 @@ def extract_pdf_content(file_bytes: bytes) -> Tuple[str, List[Dict[str, Any]]]:
         acro_form = reader.get_fields()
         if acro_form:
             for field_name, field_data in acro_form.items():
+                ftype = str(field_data.get("/FT", "text") or "text")
+                # Digital signatures (/Sig) are cryptographic certificates, not fillable user inputs
+                if ftype == "/Sig" or "/Contents" in field_data:
+                    continue
+                safe_val = sanitize_json_value(field_data.get("/V", None))
                 detected_fields.append({
-                    "name": field_name,
-                    "type": field_data.get("/FT", "text"),
-                    "value": field_data.get("/V", None),
+                    "name": str(field_name),
+                    "type": ftype,
+                    "value": safe_val,
                 })
     except Exception as e:
         logger.warning(f"Could not read AcroForm fields: {e}")
@@ -101,10 +107,15 @@ def analyze_pdf_pages(file_bytes: bytes) -> Dict[str, Any]:
         fields_dict = reader.get_fields()
         if fields_dict:
             for field_name, field_data in fields_dict.items():
+                ftype = str(field_data.get("/FT", "text") or "text")
+                # Digital signatures (/Sig) are cryptographic certificates, not fillable user inputs
+                if ftype == "/Sig" or "/Contents" in field_data:
+                    continue
+                safe_val = sanitize_json_value(field_data.get("/V", None))
                 acro_fields.append({
-                    "name": field_name,
-                    "type": field_data.get("/FT", "text"),
-                    "value": field_data.get("/V", None),
+                    "name": str(field_name),
+                    "type": ftype,
+                    "value": safe_val,
                 })
     except Exception as e:
         logger.warning(f"Could not read AcroForm fields: {e}")
@@ -125,6 +136,7 @@ def render_pdf_page_to_image(file_bytes: bytes, page_num: int) -> bytes:
     Falls back to pypdf embedded image extraction if rendering fails.
     """
     page_idx = page_num - 1
+    doc = None
     try:
         doc = pdfium.PdfDocument(file_bytes)
         if page_idx < 0 or page_idx >= len(doc):
@@ -143,6 +155,12 @@ def render_pdf_page_to_image(file_bytes: bytes, page_num: int) -> bytes:
         if page.images and len(page.images) > 0:
             return page.images[0].data
         raise ValueError(f"Could not render or extract image for PDF page {page_num}: {render_err}")
+    finally:
+        if doc is not None:
+            try:
+                doc.close()
+            except Exception:
+                pass
 
 
 def validate_and_read_image(file_bytes: bytes) -> bytes:
@@ -237,7 +255,7 @@ def process_document_hybrid(
                 source_page=1,
                 confidence=1.0,
                 is_uncertain=False,
-                extracted_value=f.get("value"),
+                extracted_value=sanitize_json_value(f.get("value")),
             ))
         title = filename.replace(".pdf", "").replace("_", " ").title()
         schema = FormSchemaDefinition(

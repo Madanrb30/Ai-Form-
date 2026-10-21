@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, ConfigDict
 
 class SubmissionCreate(BaseModel):
     response_json: Dict[str, Any] = Field(..., description="Key-value mapping of field names to user inputs")
+    session_id: Optional[str] = Field(default=None, description="Optional guest session ID to clean up anonymous drafts upon submission")
 
 
 class SubmissionResponse(BaseModel):

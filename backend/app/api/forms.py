@@ -1,9 +1,10 @@
 import os
 import re
+import math
 import uuid
 from datetime import datetime
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query, BackgroundTasks
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import cast, String
@@ -32,6 +33,7 @@ from app.schemas.form import (
     PdfExtractAndMapResponse,
     FormExportPdfRequest,
     is_identifier_field,
+    sanitize_json_value,
 )
 from app.schemas.submission import (
     SubmissionCreate,
@@ -199,7 +201,7 @@ async def upload_document(
             detail="Document extraction failed due to an unexpected internal error. Please try again."
         )
 
-    return DocumentExtractResponse(
+    response = DocumentExtractResponse(
         schema_data=schema_data,
         filename=safe_base,
         file_path=unique_name,
@@ -210,6 +212,21 @@ async def upload_document(
         pages_processed=pages_proc,
         uncertain_fields_count=uncertain_count,
     )
+
+    logger.info(
+        f"Document upload extraction completed: filename={safe_base}, strategy={strategy}, "
+        f"pages={pages_proc}, fields={len(schema_data.fields)}"
+    )
+
+    try:
+        response.model_dump_json()
+    except Exception as ser_err:
+        logger.error(f"Response serialization verification failed for {safe_base}: {ser_err}")
+        for field in response.schema_data.fields:
+            field.extracted_value = sanitize_json_value(field.extracted_value)
+            field.default_value = sanitize_json_value(field.default_value)
+
+    return response
 
 
 @router.post("", response_model=FormResponse, status_code=status.HTTP_201_CREATED)
@@ -935,21 +952,95 @@ def create_submission(
             if val is None or (isinstance(val, str) and not val.strip()) or (isinstance(val, list) and len(val) == 0):
                 validation_errors.append(f"'{flabel}' is required.")
                 continue
+            if ftype == "checkbox":
+                if val is False or str(val).strip().lower() in ("false", "0", "no", "off"):
+                    validation_errors.append(f"'{flabel}' is required.")
+                    continue
 
-        # Type validations if value present
-        if val is not None and str(val).strip():
+        # Type & constraint validations if value is present
+        if val is not None and str(val).strip() != "":
+            val_str = str(val).strip()
             if ftype == "number" and not is_identifier_field(field):
                 try:
-                    float(val)
-                except ValueError:
+                    num_val = float(val)
+                    if math.isnan(num_val) or math.isinf(num_val):
+                        validation_errors.append(f"'{flabel}' must be a finite number.")
+                    else:
+                        min_v = field.get("min_value")
+                        max_v = field.get("max_value")
+                        if min_v is not None and num_val < float(min_v):
+                            validation_errors.append(f"'{flabel}' must be at least {min_v}.")
+                        if max_v is not None and num_val > float(max_v):
+                            validation_errors.append(f"'{flabel}' cannot exceed {max_v}.")
+                except (ValueError, TypeError):
                     validation_errors.append(f"'{flabel}' must be a valid number.")
             elif ftype == "email":
-                if "@" not in str(val) or "." not in str(val):
+                if "@" not in val_str or "." not in val_str or not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", val_str):
                     validation_errors.append(f"'{flabel}' must be a valid email address.")
+            elif ftype == "phone":
+                clean_phone = re.sub(r"[\s\(\)\-\+\.]", "", val_str)
+                if not re.match(r"^\+?[0-9]{7,15}$", clean_phone):
+                    validation_errors.append(f"'{flabel}' must be a valid phone number (7-15 digits).")
+            elif ftype == "url":
+                if not re.match(r"^(https?:\/\/)?([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(:\d+)?(\/.*)?$", val_str):
+                    validation_errors.append(f"'{flabel}' must be a valid URL.")
+            elif ftype == "date":
+                try:
+                    datetime.strptime(val_str, "%Y-%m-%d")
+                except ValueError:
+                    validation_errors.append(f"'{flabel}' must be a valid date in YYYY-MM-DD format.")
+            elif ftype == "time":
+                is_valid_time = False
+                m = re.match(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*(am|pm))?$", val_str, re.IGNORECASE)
+                if m:
+                    h, m_val = int(m.group(1)), int(m.group(2))
+                    ampm = m.group(4)
+                    if ampm:
+                        if 1 <= h <= 12 and 0 <= m_val <= 59:
+                            is_valid_time = True
+                    else:
+                        if 0 <= h <= 23 and 0 <= m_val <= 59:
+                            is_valid_time = True
+                if not is_valid_time:
+                    validation_errors.append(f"'{flabel}' must be a valid time (e.g. 14:30).")
+            elif ftype == "datetime":
+                if not re.match(r"^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?$", val_str):
+                    validation_errors.append(f"'{flabel}' must be a valid date and time.")
             elif ftype in ("select", "radio"):
                 options = field.get("options") or []
-                if options and str(val) not in options:
-                    validation_errors.append(f"'{flabel}' must be one of the allowed options: {', '.join(options)}.")
+                if options and val_str not in [str(o) for o in options]:
+                    validation_errors.append(f"'{flabel}' must be one of the allowed options: {', '.join([str(o) for o in options])}.")
+            elif ftype == "checkbox":
+                if isinstance(val, bool):
+                    user_data[fname] = val
+                elif isinstance(val, (int, float)):
+                    user_data[fname] = bool(val)
+                elif isinstance(val, str):
+                    s = val.strip().lower()
+                    if s in ("true", "1", "yes", "on", "t"):
+                        user_data[fname] = True
+                    elif s in ("false", "0", "no", "off", "f"):
+                        user_data[fname] = False
+                    else:
+                        validation_errors.append(f"'{flabel}' must be a boolean value.")
+                else:
+                    validation_errors.append(f"'{flabel}' must be a boolean value.")
+
+            # String length constraints
+            if ftype in ("text", "textarea", "email", "phone", "url"):
+                min_len = field.get("min_length")
+                max_len = field.get("max_length")
+                pattern = field.get("pattern")
+                if min_len is not None and len(val_str) < int(min_len):
+                    validation_errors.append(f"'{flabel}' must be at least {min_len} characters long.")
+                if max_len is not None and len(val_str) > int(max_len):
+                    validation_errors.append(f"'{flabel}' cannot exceed {max_len} characters.")
+                if pattern:
+                    try:
+                        if not re.search(pattern, val_str):
+                            validation_errors.append(f"'{flabel}' does not match the required format.")
+                    except re.error:
+                        pass
 
     if validation_errors:
         raise HTTPException(
@@ -981,11 +1072,14 @@ def create_submission(
     except Exception as e:
         logger.warning(f"Could not generate PDF for submission {new_sub.id}: {e}")
 
-    # Remove only the submitting user's draft upon successful submission
+    # Remove submitting user's or guest session's draft upon successful submission
     try:
         draft_query = db.query(Draft).filter(Draft.form_id == form_id)
         if current_user:
             user_drafts = draft_query.filter(Draft.user_id == current_user.id).all()
+        elif sub_in.session_id:
+            clean_session = sub_in.session_id.strip()
+            user_drafts = draft_query.filter(Draft.user_id.is_(None), Draft.session_id == clean_session).all()
         else:
             user_drafts = []
         for d in user_drafts:
@@ -1388,10 +1482,21 @@ async def extract_pdf_for_published_form(
     )
 
 
+def _cleanup_preview_file(file_path: str):
+    """Safely delete temporary preview PDF after download completes."""
+    if file_path and os.path.exists(file_path):
+        try:
+            os.remove(file_path)
+            logger.debug(f"Cleaned up temporary preview PDF: {file_path}")
+        except OSError as e:
+            logger.warning(f"Could not delete temporary preview PDF {file_path}: {e}")
+
+
 @router.post("/{form_id}/export-pdf")
 def export_form_completed_pdf(
     form_id: int,
     req: FormExportPdfRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_current_user_optional)
 ):
@@ -1399,6 +1504,7 @@ def export_form_completed_pdf(
     Generate and download a completed PDF document for this form independent of submission.
     Includes the user's filled or corrected values.
     Validates form access and schema before generating output.
+    Cleans up temporary preview file in background after download.
     """
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
@@ -1442,6 +1548,9 @@ def export_form_completed_pdf(
 
     safe_title = re.sub(r"[^a-zA-Z0-9_-]", "_", form.title).strip("_") or "form"
     filename = f"{safe_title}_completed.pdf"
+
+    # Schedule background cleanup of temporary preview file
+    background_tasks.add_task(_cleanup_preview_file, pdf_path)
 
     return FileResponse(
         path=pdf_path,

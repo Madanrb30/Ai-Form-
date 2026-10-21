@@ -280,7 +280,8 @@ class AIProviderService:
         messages: List[Dict[str, str]],
         temperature: float = 0.2,
         timeout: Optional[float] = None,
-        context: str = "ai_operation"
+        context: str = "ai_operation",
+        max_tokens: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         Executes Groq chat completion with robust error handling, bounded retries,
@@ -293,13 +294,19 @@ class AIProviderService:
 
         try:
             try:
-                response = client.chat.completions.create(
-                    model=model_name,
-                    messages=messages,
-                    temperature=temperature,
-                    response_format={"type": "json_object"},
-                    timeout=effective_timeout,
-                )
+                call_kwargs = {
+                    "model": model_name,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "response_format": {"type": "json_object"},
+                    "timeout": effective_timeout,
+                }
+                if max_tokens:
+                    call_kwargs["max_tokens"] = max_tokens
+                elif "qwen" in model_name.lower():
+                    # Qwen models on Groq on-demand tier enforce 1000 OTPM limit unless max_tokens is restricted
+                    call_kwargs["max_tokens"] = 800
+                response = client.chat.completions.create(**call_kwargs)
             except APIError as api_err:
                 err_str = str(api_err).lower()
                 is_model_unavailable = (
@@ -314,13 +321,8 @@ class AIProviderService:
                     )
                     # Latch fallback model so subsequent requests never repeat the 404
                     self._active_model = fallback_model
-                    response = client.chat.completions.create(
-                        model=fallback_model,
-                        messages=messages,
-                        temperature=temperature,
-                        response_format={"type": "json_object"},
-                        timeout=effective_timeout,
-                    )
+                    call_kwargs["model"] = fallback_model
+                    response = client.chat.completions.create(**call_kwargs)
                 else:
                     raise
 

@@ -1,6 +1,13 @@
 import React from "react";
 import { Sparkles, FileText, AlertTriangle, Edit3 } from "lucide-react";
 
+export function normalizeBoolean(val) {
+  if (typeof val === "boolean") return val;
+  if (val === null || val === undefined || val === "") return false;
+  const s = String(val).trim().toLowerCase();
+  return s === "true" || s === "1" || s === "yes" || s === "on";
+}
+
 export default function FormRenderer({
   schema,
   values = {},
@@ -41,28 +48,35 @@ export default function FormRenderer({
     }
     onChange({
       ...values,
-      [name]: checked,
+      [name]: Boolean(checked),
     });
   };
 
   return (
     <div className="space-y-5">
-      {schema.fields.map((field) => {
+      {schema.fields.map((field, fIdx) => {
+        const isCheckbox = field.type === "checkbox";
+        const rawVal = values[field.name];
         const value =
-          values[field.name] !== undefined
-            ? values[field.name]
-            : (field.default_value ?? "");
+          rawVal !== undefined
+            ? (isCheckbox ? normalizeBoolean(rawVal) : rawVal)
+            : (isCheckbox ? normalizeBoolean(field.default_value) : (field.default_value ?? ""));
         const error = errors[field.name];
         const isHighlighted = highlightedFields.includes(field.name);
         const isPdfFilled = pdfFilledFields.includes(field.name);
         const isAiFilled = aiFilledFields.includes(field.name) && !isPdfFilled;
         const isManuallyEdited = manuallyEditedFields.includes(field.name);
         const reviewNote = needsReviewFields[field.name];
-        const isMissing = missingFields.includes(field.name) || (field.required && (value === undefined || value === null || String(value).trim() === "" || value === false));
+        const isMissing =
+          missingFields.includes(field.name) ||
+          (field.required &&
+            (isCheckbox
+              ? !normalizeBoolean(value)
+              : (value === undefined || value === null || String(value).trim() === "")));
 
         return (
           <div
-            key={field.name}
+            key={field.id || `field_${field.name}_${fIdx}`}
             className={`p-3.5 rounded-xl border transition-all duration-300 text-left ${
               isHighlighted
                 ? "border-neutral-900 bg-neutral-50 ai-field-highlight ring-1 ring-neutral-900/10"
@@ -121,6 +135,13 @@ export default function FormRenderer({
               </div>
             </div>
 
+            {/* Field Description / Helper Text */}
+            {field.description && (
+              <p className="text-[11px] text-neutral-500 mb-2 leading-relaxed">
+                {field.description}
+              </p>
+            )}
+
             {/* Input Controls */}
             {field.type === "text" && (
               <input
@@ -129,6 +150,9 @@ export default function FormRenderer({
                 disabled={disabled}
                 placeholder={field.placeholder || `Enter ${field.label.toLowerCase()}`}
                 value={value}
+                minLength={field.min_length}
+                maxLength={field.max_length}
+                pattern={field.pattern}
                 onChange={(e) => handleInputChange(field.name, e.target.value)}
                 className={`w-full px-3 py-2 text-xs rounded-lg border bg-white focus:outline-none transition-all ${
                   error
@@ -158,12 +182,51 @@ export default function FormRenderer({
               />
             )}
 
+            {field.type === "phone" && (
+              <input
+                id={`field-${field.name}`}
+                type="tel"
+                disabled={disabled}
+                placeholder={field.placeholder || "e.g. +1 (555) 019-2834"}
+                value={value}
+                onChange={(e) => handleInputChange(field.name, e.target.value)}
+                className={`w-full px-3 py-2 text-xs rounded-lg border bg-white focus:outline-none transition-all font-mono ${
+                  error
+                    ? "border-red-500 focus:ring-1 focus:ring-red-500"
+                    : reviewNote
+                    ? "border-amber-300 focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
+                    : "border-[#E5E5E5] focus:border-neutral-900 focus:ring-1 focus:ring-neutral-900"
+                } disabled:bg-neutral-100 disabled:text-neutral-400`}
+              />
+            )}
+
+            {field.type === "url" && (
+              <input
+                id={`field-${field.name}`}
+                type="url"
+                disabled={disabled}
+                placeholder={field.placeholder || "https://example.com"}
+                value={value}
+                onChange={(e) => handleInputChange(field.name, e.target.value)}
+                className={`w-full px-3 py-2 text-xs rounded-lg border bg-white focus:outline-none transition-all ${
+                  error
+                    ? "border-red-500 focus:ring-1 focus:ring-red-500"
+                    : reviewNote
+                    ? "border-amber-300 focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
+                    : "border-[#E5E5E5] focus:border-neutral-900 focus:ring-1 focus:ring-neutral-900"
+                } disabled:bg-neutral-100 disabled:text-neutral-400`}
+              />
+            )}
+
             {field.type === "number" && (
               <input
                 id={`field-${field.name}`}
                 type="number"
                 disabled={disabled}
                 placeholder={field.placeholder || "0"}
+                min={field.min_value}
+                max={field.max_value}
+                step={field.step || "any"}
                 value={value}
                 onChange={(e) => handleInputChange(field.name, e.target.value)}
                 className={`w-full px-3 py-2 text-xs rounded-lg border bg-white focus:outline-none transition-all ${
@@ -193,6 +256,40 @@ export default function FormRenderer({
               />
             )}
 
+            {field.type === "time" && (
+              <input
+                id={`field-${field.name}`}
+                type="time"
+                disabled={disabled}
+                value={value}
+                onChange={(e) => handleInputChange(field.name, e.target.value)}
+                className={`w-full px-3 py-2 text-xs rounded-lg border bg-white focus:outline-none transition-all ${
+                  error
+                    ? "border-red-500 focus:ring-1 focus:ring-red-500"
+                    : reviewNote
+                    ? "border-amber-300 focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
+                    : "border-[#E5E5E5] focus:border-neutral-900 focus:ring-1 focus:ring-neutral-900"
+                } disabled:bg-neutral-100 disabled:text-neutral-400`}
+              />
+            )}
+
+            {field.type === "datetime" && (
+              <input
+                id={`field-${field.name}`}
+                type="datetime-local"
+                disabled={disabled}
+                value={value}
+                onChange={(e) => handleInputChange(field.name, e.target.value)}
+                className={`w-full px-3 py-2 text-xs rounded-lg border bg-white focus:outline-none transition-all ${
+                  error
+                    ? "border-red-500 focus:ring-1 focus:ring-red-500"
+                    : reviewNote
+                    ? "border-amber-300 focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
+                    : "border-[#E5E5E5] focus:border-neutral-900 focus:ring-1 focus:ring-neutral-900"
+                } disabled:bg-neutral-100 disabled:text-neutral-400`}
+              />
+            )}
+
             {field.type === "textarea" && (
               <textarea
                 id={`field-${field.name}`}
@@ -200,6 +297,8 @@ export default function FormRenderer({
                 disabled={disabled}
                 placeholder={field.placeholder || "Enter details..."}
                 value={value}
+                minLength={field.min_length}
+                maxLength={field.max_length}
                 onChange={(e) => handleInputChange(field.name, e.target.value)}
                 className={`w-full px-3 py-2 text-xs rounded-lg border bg-white focus:outline-none transition-all ${
                   error
@@ -240,7 +339,7 @@ export default function FormRenderer({
                   id={`field-${field.name}`}
                   type="checkbox"
                   disabled={disabled}
-                  checked={Boolean(value)}
+                  checked={normalizeBoolean(value)}
                   onChange={(e) => handleCheckboxChange(field.name, e.target.checked)}
                   className="w-4 h-4 text-neutral-900 border-[#E5E5E5] rounded focus:ring-neutral-900 cursor-pointer"
                 />

@@ -17,13 +17,11 @@ import {
   RotateCcw,
   ChevronUp,
   ChevronDown,
-  Globe,
-  Save,
 } from "lucide-react";
 import { api } from "../services/api";
 import { useToast } from "../context/ToastContext";
 import { useAuth } from "../context/AuthContext";
-import FormRenderer from "../components/forms/FormRenderer";
+import FormRenderer, { normalizeBoolean } from "../components/forms/FormRenderer";
 
 const TEMPLATES = [
   {
@@ -70,6 +68,30 @@ const TEMPLATES = [
   },
 ];
 
+export const CATEGORIES = [
+  "General",
+  "Education",
+  "Careers",
+  "Customer Experience",
+  "Academic",
+  "Financial Aid",
+];
+
+export const FIELD_TYPES = [
+  { value: "text", label: "Single-line Text" },
+  { value: "textarea", label: "Multi-line Text (Textarea)" },
+  { value: "number", label: "Number" },
+  { value: "email", label: "Email Address" },
+  { value: "phone", label: "Phone Number" },
+  { value: "date", label: "Date" },
+  { value: "time", label: "Time" },
+  { value: "datetime", label: "Date & Time" },
+  { value: "select", label: "Dropdown / Select" },
+  { value: "radio", label: "Radio Buttons" },
+  { value: "checkbox", label: "Checkbox (Yes / No)" },
+  { value: "url", label: "Website / URL" },
+];
+
 export default function CreateFormPage({ setView }) {
   const { user } = useAuth();
   const isAdmin = user?.role === "ADMIN" || user?.role === "SUPER_ADMIN";
@@ -89,11 +111,12 @@ export default function CreateFormPage({ setView }) {
 
   // --- Blank Form State ---
   const [blankTitle, setBlankTitle] = useState("");
+  const [blankCategory, setBlankCategory] = useState("General");
   const [blankDesc, setBlankDesc] = useState("");
   const [blankFields, setBlankFields] = useState([
-    { name: "full_name", label: "Full Name", type: "text", required: true, placeholder: "e.g. John Doe", options: [] },
-    { name: "email", label: "Email Address", type: "email", required: true, placeholder: "name@example.com", options: [] },
-    { name: "phone_number", label: "Phone Number", type: "text", required: false, placeholder: "10-digit mobile number", options: [] },
+    { id: "f_1", name: "full_name", label: "Full Name", type: "text", required: true, placeholder: "e.g. John Doe", description: "", options: [] },
+    { id: "f_2", name: "email", label: "Email Address", type: "email", required: true, placeholder: "name@example.com", description: "", options: [] },
+    { id: "f_3", name: "phone_number", label: "Phone Number", type: "phone", required: false, placeholder: "10-digit mobile number", description: "", options: [] },
   ]);
   const [savingBlank, setSavingBlank] = useState(false);
 
@@ -188,7 +211,11 @@ export default function CreateFormPage({ setView }) {
     setGeneratingTemplate(true);
     try {
       const res = await api.generateForm(tmpl.prompt);
-      setGeneratedSchema(res.schema_data);
+      const schemaData = res.schema_data ? { ...res.schema_data } : {};
+      if (!schemaData.category) {
+        schemaData.category = tmpl.category || "General";
+      }
+      setGeneratedSchema(schemaData);
       toast(`Loaded schema for ${tmpl.title}`, "success");
     } catch (err) {
       toast(`Error loading template: ${err.message}`, "error");
@@ -203,10 +230,14 @@ export default function CreateFormPage({ setView }) {
     setSavingSchema(true);
     try {
       const finalIsPublic = Boolean(isPublicTarget && isAdmin);
+      const schemaToSave = {
+        ...generatedSchema,
+        category: generatedSchema.category || selectedTemplate?.category || "General",
+      };
       const created = await api.createForm({
-        title: generatedSchema.title,
-        description: generatedSchema.description,
-        schema_json: generatedSchema,
+        title: schemaToSave.title,
+        description: schemaToSave.description,
+        schema_json: schemaToSave,
         is_public: finalIsPublic,
         original_document_path: extractionMeta?.file_path || undefined,
       });
@@ -232,14 +263,16 @@ export default function CreateFormPage({ setView }) {
   // --- Blank Form Field Management ---
   const addBlankField = () => {
     const idx = blankFields.length + 1;
-    setBlankFields([
-      ...blankFields,
+    setBlankFields((prev) => [
+      ...prev,
       {
+        id: `field_${Date.now()}_${idx}`,
         name: `custom_field_${idx}`,
         label: `New Field ${idx}`,
         type: "text",
         required: false,
         placeholder: "Enter value",
+        description: "",
         options: [],
       },
     ]);
@@ -250,65 +283,114 @@ export default function CreateFormPage({ setView }) {
       toast("A form must have at least one field.", "info");
       return;
     }
-    setBlankFields(blankFields.filter((_, i) => i !== index));
+    setBlankFields((prev) => prev.filter((_, i) => i !== index));
   };
 
   const moveBlankFieldUp = (index) => {
     if (index === 0) return;
-    const reordered = [...blankFields];
-    const temp = reordered[index - 1];
-    reordered[index - 1] = reordered[index];
-    reordered[index] = temp;
-    setBlankFields(reordered);
+    setBlankFields((prev) => {
+      const reordered = [...prev];
+      const temp = reordered[index - 1];
+      reordered[index - 1] = reordered[index];
+      reordered[index] = temp;
+      return reordered;
+    });
   };
 
   const moveBlankFieldDown = (index) => {
     if (index === blankFields.length - 1) return;
-    const reordered = [...blankFields];
-    const temp = reordered[index + 1];
-    reordered[index + 1] = reordered[index];
-    reordered[index] = temp;
-    setBlankFields(reordered);
+    setBlankFields((prev) => {
+      const reordered = [...prev];
+      const temp = reordered[index + 1];
+      reordered[index + 1] = reordered[index];
+      reordered[index] = temp;
+      return reordered;
+    });
   };
 
   const addBlankFieldOption = (fieldIndex) => {
-    const updated = [...blankFields];
-    const opts = [...(updated[fieldIndex].options || [])];
-    opts.push(`Option ${opts.length + 1}`);
-    updated[fieldIndex].options = opts;
-    setBlankFields(updated);
+    setBlankFields((prev) => {
+      const updated = [...prev];
+      const target = { ...updated[fieldIndex] };
+      const opts = [...(target.options || [])];
+      opts.push(`Option ${opts.length + 1}`);
+      target.options = opts;
+      updated[fieldIndex] = target;
+      return updated;
+    });
   };
 
   const updateBlankFieldOption = (fieldIndex, optIndex, val) => {
-    const updated = [...blankFields];
-    const opts = [...(updated[fieldIndex].options || [])];
-    opts[optIndex] = val;
-    updated[fieldIndex].options = opts;
-    setBlankFields(updated);
+    setBlankFields((prev) => {
+      const updated = [...prev];
+      const target = { ...updated[fieldIndex] };
+      const opts = [...(target.options || [])];
+      opts[optIndex] = val;
+      target.options = opts;
+      updated[fieldIndex] = target;
+      return updated;
+    });
+  };
+
+  const moveBlankFieldOptionUp = (fieldIndex, optIndex) => {
+    if (optIndex === 0) return;
+    setBlankFields((prev) => {
+      const updated = [...prev];
+      const target = { ...updated[fieldIndex] };
+      const opts = [...(target.options || [])];
+      const temp = opts[optIndex - 1];
+      opts[optIndex - 1] = opts[optIndex];
+      opts[optIndex] = temp;
+      target.options = opts;
+      updated[fieldIndex] = target;
+      return updated;
+    });
+  };
+
+  const moveBlankFieldOptionDown = (fieldIndex, optIndex) => {
+    setBlankFields((prev) => {
+      const updated = [...prev];
+      const target = { ...updated[fieldIndex] };
+      const opts = [...(target.options || [])];
+      if (optIndex >= opts.length - 1) return prev;
+      const temp = opts[optIndex + 1];
+      opts[optIndex + 1] = opts[optIndex];
+      opts[optIndex] = temp;
+      target.options = opts;
+      updated[fieldIndex] = target;
+      return updated;
+    });
   };
 
   const removeBlankFieldOption = (fieldIndex, optIndex) => {
-    const updated = [...blankFields];
-    const opts = [...(updated[fieldIndex].options || [])];
-    if (opts.length <= 1) {
-      toast("Dropdown/radio fields must have at least one option.", "info");
-      return;
-    }
-    opts.splice(optIndex, 1);
-    updated[fieldIndex].options = opts;
-    setBlankFields(updated);
+    setBlankFields((prev) => {
+      const updated = [...prev];
+      const target = { ...updated[fieldIndex] };
+      const opts = [...(target.options || [])];
+      if (opts.length <= 1) {
+        toast("Dropdown/radio fields must have at least one option.", "info");
+        return prev;
+      }
+      opts.splice(optIndex, 1);
+      target.options = opts;
+      updated[fieldIndex] = target;
+      return updated;
+    });
   };
 
   const updateBlankField = (index, key, val) => {
-    const updated = [...blankFields];
-    updated[index][key] = val;
-    if (key === "label" && (!updated[index].name || updated[index].name.startsWith("custom_field_"))) {
-      updated[index].name = val.toLowerCase().replace(/[^a-z0-9]/g, "_").slice(0, 32);
-    }
-    if (key === "type" && ["select", "radio"].includes(val) && (!updated[index].options || updated[index].options.length === 0)) {
-      updated[index].options = ["Option 1", "Option 2"];
-    }
-    setBlankFields(updated);
+    setBlankFields((prev) => {
+      const updated = [...prev];
+      const target = { ...updated[index], [key]: val };
+      if (key === "label" && (!target.name || target.name.startsWith("custom_field_"))) {
+        target.name = val.toLowerCase().replace(/[^a-z0-9_]/g, "_").slice(0, 32);
+      }
+      if (key === "type" && ["select", "radio"].includes(val) && (!target.options || target.options.length === 0)) {
+        target.options = ["Option 1", "Option 2"];
+      }
+      updated[index] = target;
+      return updated;
+    });
   };
 
   const handleSaveBlankForm = async (isPublicTarget = false) => {
@@ -316,24 +398,145 @@ export default function CreateFormPage({ setView }) {
       toast("Please provide a title for your form.", "error");
       return;
     }
+    if (blankFields.length === 0) {
+      toast("Please add at least one field before saving.", "error");
+      return;
+    }
+
+    // Validate fields
+    for (let i = 0; i < blankFields.length; i++) {
+      const f = blankFields[i];
+      if (!f.label?.trim()) {
+        toast(`Field #${i + 1} has an empty label. Please specify a label.`, "error");
+        return;
+      }
+      if (["select", "radio"].includes(f.type)) {
+        const cleanOpts = (f.options || []).map((o) => String(o).trim()).filter(Boolean);
+        if (cleanOpts.length === 0) {
+          toast(`Field "${f.label}" requires at least one valid option.`, "error");
+          return;
+        }
+      }
+      if (f.type === "number") {
+        const minVal = f.min_value !== "" && f.min_value !== undefined ? Number(f.min_value) : null;
+        const maxVal = f.max_value !== "" && f.max_value !== undefined ? Number(f.max_value) : null;
+        const stepVal = f.step !== "" && f.step !== undefined ? Number(f.step) : null;
+
+        if (minVal !== null && (!isFinite(minVal) || isNaN(minVal))) {
+          toast(`Field "${f.label}": Minimum value must be a valid number.`, "error");
+          return;
+        }
+        if (maxVal !== null && (!isFinite(maxVal) || isNaN(maxVal))) {
+          toast(`Field "${f.label}": Maximum value must be a valid number.`, "error");
+          return;
+        }
+        if (minVal !== null && maxVal !== null && minVal > maxVal) {
+          toast(`Field "${f.label}": Minimum value cannot exceed maximum value.`, "error");
+          return;
+        }
+        if (stepVal !== null && (stepVal <= 0 || !isFinite(stepVal) || isNaN(stepVal))) {
+          toast(`Field "${f.label}": Step must be a positive number.`, "error");
+          return;
+        }
+      }
+      if (["text", "textarea", "email", "phone", "url"].includes(f.type)) {
+        const minLen = f.min_length !== "" && f.min_length !== undefined ? Number(f.min_length) : null;
+        const maxLen = f.max_length !== "" && f.max_length !== undefined ? Number(f.max_length) : null;
+
+        if (minLen !== null && (minLen < 0 || isNaN(minLen))) {
+          toast(`Field "${f.label}": Minimum length cannot be negative.`, "error");
+          return;
+        }
+        if (maxLen !== null && (maxLen < 0 || isNaN(maxLen))) {
+          toast(`Field "${f.label}": Maximum length cannot be negative.`, "error");
+          return;
+        }
+        if (minLen !== null && maxLen !== null && minLen > maxLen) {
+          toast(`Field "${f.label}": Minimum length cannot exceed maximum length.`, "error");
+          return;
+        }
+        if (f.pattern && f.pattern.trim()) {
+          try {
+            new RegExp(f.pattern.trim());
+          } catch {
+            toast(`Field "${f.label}": Invalid regular expression pattern.`, "error");
+            return;
+          }
+        }
+      }
+    }
+
     setSavingBlank(true);
     try {
       const finalIsPublic = Boolean(isPublicTarget && isAdmin);
+      const seenIds = new Set();
+      const seenNames = new Set();
       const schemaJson = {
         title: blankTitle.trim(),
         description: blankDesc.trim() || undefined,
-        fields: blankFields.map((f, i) => ({
-          name: f.name.trim().toLowerCase().replace(/[^a-z0-9_]/g, "_") || `field_${i + 1}`,
-          label: f.label.trim() || `Field ${i + 1}`,
-          type: f.type,
-          required: Boolean(f.required),
-          placeholder: f.placeholder || undefined,
-          options: ["select", "radio"].includes(f.type)
-            ? f.options && f.options.length > 0
-              ? f.options
-              : ["Option 1", "Option 2"]
-            : undefined,
-        })),
+        category: blankCategory || "General",
+        fields: blankFields.map((f, i) => {
+          const type = f.type || "text";
+          const isSelectOrRadio = ["select", "radio"].includes(type);
+
+          let fId = f.id || `field_${Date.now()}_${i + 1}`;
+          if (seenIds.has(fId)) {
+            let suffix = 2;
+            while (seenIds.has(`${fId}_${suffix}`)) suffix++;
+            fId = `${fId}_${suffix}`;
+          }
+          seenIds.add(fId);
+
+          let fName = (f.name || `field_${i + 1}`).trim().toLowerCase().replace(/[^a-z0-9_]/g, "_") || `field_${i + 1}`;
+          if (seenNames.has(fName)) {
+            let suffix = 2;
+            while (seenNames.has(`${fName}_${suffix}`)) suffix++;
+            fName = `${fName}_${suffix}`;
+          }
+          seenNames.add(fName);
+
+          let defVal = undefined;
+          if (type === "checkbox") {
+            defVal = normalizeBoolean(f.default_value);
+          } else if (f.default_value !== undefined && f.default_value !== "") {
+            defVal = f.default_value;
+          }
+
+          let cleanOpts = undefined;
+          if (isSelectOrRadio) {
+            const rawOpts = f.options && f.options.length > 0 ? f.options : ["Option 1", "Option 2"];
+            const seenOpts = new Set();
+            cleanOpts = [];
+            for (const opt of rawOpts) {
+              const s = String(opt).trim();
+              if (s && !seenOpts.has(s)) {
+                seenOpts.add(s);
+                cleanOpts.push(s);
+              }
+            }
+            if (defVal !== undefined && !seenOpts.has(defVal)) {
+              defVal = undefined;
+            }
+          }
+
+          return {
+            id: fId,
+            name: fName,
+            label: (f.label || `Field ${i + 1}`).trim() || `Field ${i + 1}`,
+            type,
+            required: Boolean(f.required),
+            placeholder: f.placeholder?.trim() || undefined,
+            description: f.description?.trim() || undefined,
+            default_value: defVal,
+            options: isSelectOrRadio ? cleanOpts : undefined,
+            min_value: type === "number" && f.min_value !== undefined && f.min_value !== "" ? Number(f.min_value) : undefined,
+            max_value: type === "number" && f.max_value !== undefined && f.max_value !== "" ? Number(f.max_value) : undefined,
+            step: type === "number" && f.step !== undefined && f.step !== "" ? Number(f.step) : undefined,
+            min_length: ["text", "textarea"].includes(type) && f.min_length !== undefined && f.min_length !== "" ? Number(f.min_length) : undefined,
+            max_length: ["text", "textarea"].includes(type) && f.max_length !== undefined && f.max_length !== "" ? Number(f.max_length) : undefined,
+            pattern: ["text", "textarea", "email", "phone", "url"].includes(type) && f.pattern?.trim() ? f.pattern.trim() : undefined,
+          };
+        }),
       };
 
       const created = await api.createForm({
@@ -394,6 +597,29 @@ export default function CreateFormPage({ setView }) {
     const updated = [...generatedSchema.fields];
     const opts = [...(updated[fieldIndex].options || [])];
     opts[optIndex] = val;
+    updated[fieldIndex] = { ...updated[fieldIndex], options: opts };
+    setGeneratedSchema({ ...generatedSchema, fields: updated });
+  };
+
+  const moveGeneratedOptionUp = (fieldIndex, optIndex) => {
+    if (optIndex === 0 || !generatedSchema?.fields) return;
+    const updated = [...generatedSchema.fields];
+    const opts = [...(updated[fieldIndex].options || [])];
+    const temp = opts[optIndex - 1];
+    opts[optIndex - 1] = opts[optIndex];
+    opts[optIndex] = temp;
+    updated[fieldIndex] = { ...updated[fieldIndex], options: opts };
+    setGeneratedSchema({ ...generatedSchema, fields: updated });
+  };
+
+  const moveGeneratedOptionDown = (fieldIndex, optIndex) => {
+    if (!generatedSchema?.fields) return;
+    const updated = [...generatedSchema.fields];
+    const opts = [...(updated[fieldIndex].options || [])];
+    if (optIndex >= opts.length - 1) return;
+    const temp = opts[optIndex + 1];
+    opts[optIndex + 1] = opts[optIndex];
+    opts[optIndex] = temp;
     updated[fieldIndex] = { ...updated[fieldIndex], options: opts };
     setGeneratedSchema({ ...generatedSchema, fields: updated });
   };
@@ -651,18 +877,40 @@ export default function CreateFormPage({ setView }) {
       {activeTab === "blank" && !generatedSchema && (
         <form onSubmit={handleSaveBlankForm} className="mt-8 space-y-6">
           <div className="p-5 border border-[#E5E5E5] rounded-xl bg-white space-y-4">
-            <div>
-              <label className="block text-xs font-semibold text-neutral-900 mb-1">
-                Form Title
-              </label>
-              <input
-                type="text"
-                required
-                value={blankTitle}
-                onChange={(e) => setBlankTitle(e.target.value)}
-                placeholder="e.g. Employee Verification Form"
-                className="w-full px-3 py-2 text-xs border border-[#E5E5E5] rounded-lg focus:outline-none focus:border-neutral-900 transition-all"
-              />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-semibold text-neutral-900 mb-1">
+                  Form Title
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={blankTitle}
+                  onChange={(e) => setBlankTitle(e.target.value)}
+                  placeholder="e.g. Employee Verification Form"
+                  className="w-full px-3 py-2 text-xs border border-[#E5E5E5] rounded-lg focus:outline-none focus:border-neutral-900 transition-all"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-neutral-900 mb-1">
+                  Category
+                </label>
+                <select
+                  value={blankCategory}
+                  onChange={(e) => setBlankCategory(e.target.value)}
+                  className="w-full px-3 py-2 text-xs border border-[#E5E5E5] rounded-lg focus:outline-none focus:border-neutral-900 bg-white"
+                >
+                  {!CATEGORIES.includes(blankCategory) && blankCategory && (
+                    <option value={blankCategory}>{blankCategory}</option>
+                  )}
+                  {CATEGORIES.map((cat) => (
+                    <option key={cat} value={cat}>
+                      {cat}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
 
             <div>
@@ -697,7 +945,7 @@ export default function CreateFormPage({ setView }) {
 
             {blankFields.map((field, idx) => (
               <div
-                key={idx}
+                key={field.id || idx}
                 className="p-4 border border-[#E5E5E5] rounded-xl bg-white space-y-3"
               >
                 <div className="flex items-center justify-between">
@@ -707,6 +955,9 @@ export default function CreateFormPage({ setView }) {
                     </span>
                     <span className="text-xs font-medium text-neutral-900">
                       {field.label || "Untitled Field"}
+                    </span>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-neutral-100 text-neutral-600 border border-neutral-200 uppercase">
+                      {field.type}
                     </span>
                   </div>
                   <div className="flex items-center space-x-1">
@@ -763,14 +1014,11 @@ export default function CreateFormPage({ setView }) {
                       onChange={(e) => updateBlankField(idx, "type", e.target.value)}
                       className="w-full px-2.5 py-1.5 text-xs border border-[#E5E5E5] rounded-md focus:outline-none focus:border-neutral-900 bg-white"
                     >
-                      <option value="text">Text</option>
-                      <option value="email">Email</option>
-                      <option value="number">Number</option>
-                      <option value="date">Date</option>
-                      <option value="textarea">Textarea</option>
-                      <option value="select">Dropdown / Select</option>
-                      <option value="checkbox">Checkbox</option>
-                      <option value="radio">Radio Buttons</option>
+                      {FIELD_TYPES.map((ft) => (
+                        <option key={ft.value} value={ft.value}>
+                          {ft.label}
+                        </option>
+                      ))}
                     </select>
                   </div>
 
@@ -788,6 +1036,113 @@ export default function CreateFormPage({ setView }) {
                   </div>
                 </div>
 
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  <div>
+                    <label className="block text-[11px] font-medium text-neutral-600 mb-1">
+                      Help Text / Description
+                    </label>
+                    <input
+                      type="text"
+                      value={field.description || ""}
+                      onChange={(e) => updateBlankField(idx, "description", e.target.value)}
+                      placeholder="Guidance shown below the field..."
+                      className="w-full px-2.5 py-1.5 text-xs border border-[#E5E5E5] rounded-md focus:outline-none focus:border-neutral-900"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-medium text-neutral-600 mb-1">
+                      Field Identifier (Key)
+                    </label>
+                    <input
+                      type="text"
+                      value={field.name}
+                      onChange={(e) => updateBlankField(idx, "name", e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "_"))}
+                      placeholder="field_key"
+                      className="w-full px-2.5 py-1.5 text-xs font-mono border border-[#E5E5E5] rounded-md focus:outline-none focus:border-neutral-900 bg-[#F7F7F7]"
+                    />
+                  </div>
+                </div>
+
+                {/* Numeric Constraints */}
+                {field.type === "number" && (
+                  <div className="grid grid-cols-3 gap-2 p-2.5 bg-[#F7F7F7] border border-[#E5E5E5] rounded-lg">
+                    <div>
+                      <label className="block text-[10px] font-medium text-neutral-600 mb-0.5">Min Value</label>
+                      <input
+                        type="number"
+                        value={field.min_value ?? ""}
+                        onChange={(e) => updateBlankField(idx, "min_value", e.target.value)}
+                        placeholder="e.g. 0"
+                        className="w-full px-2 py-1 text-xs border border-[#E5E5E5] rounded bg-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-medium text-neutral-600 mb-0.5">Max Value</label>
+                      <input
+                        type="number"
+                        value={field.max_value ?? ""}
+                        onChange={(e) => updateBlankField(idx, "max_value", e.target.value)}
+                        placeholder="e.g. 100"
+                        className="w-full px-2 py-1 text-xs border border-[#E5E5E5] rounded bg-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-medium text-neutral-600 mb-0.5">Step</label>
+                      <input
+                        type="number"
+                        value={field.step ?? ""}
+                        onChange={(e) => updateBlankField(idx, "step", e.target.value)}
+                        placeholder="e.g. 1"
+                        className="w-full px-2 py-1 text-xs border border-[#E5E5E5] rounded bg-white"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Text Length & Pattern Constraints */}
+                {["text", "textarea", "email", "phone", "url"].includes(field.type) && (
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 p-2.5 bg-[#F7F7F7] border border-[#E5E5E5] rounded-lg">
+                    {["text", "textarea"].includes(field.type) && (
+                      <>
+                        <div>
+                          <label className="block text-[10px] font-medium text-neutral-600 mb-0.5">Min Length (chars)</label>
+                          <input
+                            type="number"
+                            min="0"
+                            value={field.min_length ?? ""}
+                            onChange={(e) => updateBlankField(idx, "min_length", e.target.value)}
+                            placeholder="e.g. 2"
+                            className="w-full px-2 py-1 text-xs border border-[#E5E5E5] rounded bg-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-medium text-neutral-600 mb-0.5">Max Length (chars)</label>
+                          <input
+                            type="number"
+                            min="1"
+                            value={field.max_length ?? ""}
+                            onChange={(e) => updateBlankField(idx, "max_length", e.target.value)}
+                            placeholder="e.g. 100"
+                            className="w-full px-2 py-1 text-xs border border-[#E5E5E5] rounded bg-white"
+                          />
+                        </div>
+                      </>
+                    )}
+                    <div className={["text", "textarea"].includes(field.type) ? "" : "sm:col-span-3"}>
+                      <label className="block text-[10px] font-medium text-neutral-600 mb-0.5">Regex Pattern</label>
+                      <input
+                        type="text"
+                        value={field.pattern ?? ""}
+                        onChange={(e) => updateBlankField(idx, "pattern", e.target.value)}
+                        placeholder="e.g. ^[A-Za-z0-9_-]+$"
+                        className="w-full px-2 py-1 text-xs font-mono border border-[#E5E5E5] rounded bg-white"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Options for select / radio */}
                 {["select", "radio"].includes(field.type) && (
                   <div className="p-3 bg-[#F7F7F7] border border-[#E5E5E5] rounded-lg space-y-2">
                     <div className="flex items-center justify-between">
@@ -806,7 +1161,7 @@ export default function CreateFormPage({ setView }) {
 
                     <div className="space-y-1.5">
                       {(field.options || []).map((opt, optIdx) => (
-                        <div key={optIdx} className="flex items-center space-x-2">
+                        <div key={optIdx} className="flex items-center space-x-1.5">
                           <input
                             type="text"
                             value={opt}
@@ -814,6 +1169,24 @@ export default function CreateFormPage({ setView }) {
                             placeholder={`Option ${optIdx + 1}`}
                             className="w-full px-2 py-1 text-xs border border-[#E5E5E5] rounded bg-white focus:outline-none focus:border-neutral-900"
                           />
+                          <button
+                            type="button"
+                            disabled={optIdx === 0}
+                            onClick={() => moveBlankFieldOptionUp(idx, optIdx)}
+                            className="p-1 text-neutral-400 hover:text-black disabled:opacity-30 cursor-pointer"
+                            title="Move Option Up"
+                          >
+                            <ChevronUp className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            disabled={optIdx === (field.options || []).length - 1}
+                            onClick={() => moveBlankFieldOptionDown(idx, optIdx)}
+                            className="p-1 text-neutral-400 hover:text-black disabled:opacity-30 cursor-pointer"
+                            title="Move Option Down"
+                          >
+                            <ChevronDown className="w-3.5 h-3.5" />
+                          </button>
                           <button
                             type="button"
                             onClick={() => removeBlankFieldOption(idx, optIdx)}
@@ -1091,14 +1464,11 @@ export default function CreateFormPage({ setView }) {
                           }}
                           className="w-full px-2.5 py-1.5 text-xs border border-[#E5E5E5] rounded-md focus:outline-none focus:border-neutral-900 bg-white"
                         >
-                          <option value="text">Text</option>
-                          <option value="email">Email</option>
-                          <option value="number">Number</option>
-                          <option value="date">Date</option>
-                          <option value="textarea">Textarea</option>
-                          <option value="select">Dropdown / Select</option>
-                          <option value="checkbox">Checkbox</option>
-                          <option value="radio">Radio</option>
+                          {FIELD_TYPES.map((ft) => (
+                            <option key={ft.value} value={ft.value}>
+                              {ft.label}
+                            </option>
+                          ))}
                         </select>
                       </div>
 
@@ -1137,7 +1507,7 @@ export default function CreateFormPage({ setView }) {
 
                         <div className="space-y-1.5">
                           {(f.options || []).map((opt, optIdx) => (
-                            <div key={optIdx} className="flex items-center space-x-2">
+                            <div key={optIdx} className="flex items-center space-x-1.5">
                               <input
                                 type="text"
                                 value={opt}
@@ -1145,6 +1515,24 @@ export default function CreateFormPage({ setView }) {
                                 placeholder={`Option ${optIdx + 1}`}
                                 className="w-full px-2 py-1 text-xs border border-[#E5E5E5] rounded bg-white focus:outline-none focus:border-neutral-900"
                               />
+                              <button
+                                type="button"
+                                disabled={optIdx === 0}
+                                onClick={() => moveGeneratedOptionUp(idx, optIdx)}
+                                className="p-1 text-neutral-400 hover:text-black disabled:opacity-30 cursor-pointer"
+                                title="Move Option Up"
+                              >
+                                <ChevronUp className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                disabled={optIdx === (f.options || []).length - 1}
+                                onClick={() => moveGeneratedOptionDown(idx, optIdx)}
+                                className="p-1 text-neutral-400 hover:text-black disabled:opacity-30 cursor-pointer"
+                                title="Move Option Down"
+                              >
+                                <ChevronDown className="w-3.5 h-3.5" />
+                              </button>
                               <button
                                 type="button"
                                 onClick={() => removeGeneratedOption(idx, optIdx)}

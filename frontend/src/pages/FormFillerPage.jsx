@@ -70,14 +70,44 @@ export default function FormFillerPage({ formId, setView, voiceComponent }) {
 
       // Format validations
       if (val !== undefined && val !== null && String(val).trim()) {
+        const strVal = String(val).trim();
         if (f.type === "email") {
           const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-          if (!emailRegex.test(String(val))) {
+          if (!emailRegex.test(strVal)) {
             newErrors[f.name] = "Please enter a valid email address.";
           }
+        } else if (f.type === "phone") {
+          const digitsOnly = strVal.replace(/\D/g, "");
+          if (digitsOnly.length < 7 || digitsOnly.length > 15) {
+            newErrors[f.name] = "Please enter a valid phone number (7-15 digits).";
+          }
+        } else if (f.type === "url") {
+          try {
+            const parsed = new URL(strVal);
+            if (!["http:", "https:"].includes(parsed.protocol)) {
+              newErrors[f.name] = "URL must start with http:// or https://.";
+            }
+          } catch {
+            newErrors[f.name] = "Please enter a valid URL (e.g. https://example.com).";
+          }
         } else if (f.type === "number") {
-          if (isNaN(Number(val))) {
+          const num = Number(val);
+          if (isNaN(num)) {
             newErrors[f.name] = "Please enter a valid number.";
+          } else {
+            if (f.min_value !== undefined && f.min_value !== null && num < Number(f.min_value)) {
+              newErrors[f.name] = `Must be at least ${f.min_value}.`;
+            }
+            if (f.max_value !== undefined && f.max_value !== null && num > Number(f.max_value)) {
+              newErrors[f.name] = `Must be at most ${f.max_value}.`;
+            }
+          }
+        } else if (["text", "textarea"].includes(f.type)) {
+          if (f.min_length !== undefined && f.min_length !== null && strVal.length < Number(f.min_length)) {
+            newErrors[f.name] = `Must be at least ${f.min_length} characters.`;
+          }
+          if (f.max_length !== undefined && f.max_length !== null && strVal.length > Number(f.max_length)) {
+            newErrors[f.name] = `Cannot exceed ${f.max_length} characters.`;
           }
         }
       }

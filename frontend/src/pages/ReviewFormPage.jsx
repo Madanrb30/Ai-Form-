@@ -98,14 +98,44 @@ export default function ReviewFormPage({
 
       // Format validations
       if (val !== undefined && val !== null && String(val).trim()) {
+        const strVal = String(val).trim();
         if (f.type === "email") {
           const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-          if (!emailRegex.test(String(val))) {
+          if (!emailRegex.test(strVal)) {
             errors.push(`"${f.label}" must be a valid email address.`);
           }
+        } else if (f.type === "phone") {
+          const digitsOnly = strVal.replace(/\D/g, "");
+          if (digitsOnly.length < 7 || digitsOnly.length > 15) {
+            errors.push(`"${f.label}" must be a valid phone number (7-15 digits).`);
+          }
+        } else if (f.type === "url") {
+          try {
+            const parsed = new URL(strVal);
+            if (!["http:", "https:"].includes(parsed.protocol)) {
+              errors.push(`"${f.label}" must start with http:// or https://.`);
+            }
+          } catch {
+            errors.push(`"${f.label}" must be a valid URL.`);
+          }
         } else if (f.type === "number") {
-          if (isNaN(Number(val))) {
+          const num = Number(val);
+          if (isNaN(num)) {
             errors.push(`"${f.label}" must be a numeric value.`);
+          } else {
+            if (f.min_value !== undefined && f.min_value !== null && num < Number(f.min_value)) {
+              errors.push(`"${f.label}" must be at least ${f.min_value}.`);
+            }
+            if (f.max_value !== undefined && f.max_value !== null && num > Number(f.max_value)) {
+              errors.push(`"${f.label}" must be at most ${f.max_value}.`);
+            }
+          }
+        } else if (["text", "textarea"].includes(f.type)) {
+          if (f.min_length !== undefined && f.min_length !== null && strVal.length < Number(f.min_length)) {
+            errors.push(`"${f.label}" must be at least ${f.min_length} characters.`);
+          }
+          if (f.max_length !== undefined && f.max_length !== null && strVal.length > Number(f.max_length)) {
+            errors.push(`"${f.label}" cannot exceed ${f.max_length} characters.`);
           }
         }
       }
